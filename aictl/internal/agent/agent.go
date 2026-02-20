@@ -83,6 +83,7 @@ web_fetch
 - For GitHub repos, fetch the main page to get README and project info.
 - Do NOT use bash to clone repositories just to read them.
 - If a redirect to a different domain occurs, make a new web_fetch request with the provided URL.
+- KNOWN INACCESSIBLE SITES: x.com (Twitter), instagram.com, facebook.com, linkedin.com require JavaScript rendering and WILL fail with web_fetch. Do NOT retry or try alternative URLs (nitter, etc). Instead, immediately tell the user: "This site requires a browser to access. Please paste the content directly."
 
 web_search
 - Use to find current information, documentation, or solutions online.
@@ -578,9 +579,22 @@ func (a *Agent) wireTaskTool() {
 	tt.SetRunner(a.runSubAgent)
 }
 
+// subAgentReporter is an optional interface for sending sub-agent progress to the TUI.
+type subAgentReporter interface {
+	ReportSubAgentProgress(tui.SubAgentProgress)
+}
+
 // runSubAgent creates and runs an ephemeral read-only sub-agent.
 func (a *Agent) runSubAgent(ctx context.Context, prompt string) (string, error) {
-	buf := tui.NewBufferIO()
+	// If the main IO supports progress reporting, wire it up.
+	var buf *tui.BufferIO
+	if pr, ok := a.io.(subAgentReporter); ok {
+		buf = tui.NewBufferIOWithProgress("", func(p tui.SubAgentProgress) {
+			pr.ReportSubAgentProgress(p)
+		})
+	} else {
+		buf = tui.NewBufferIO()
+	}
 
 	roRegistry := tools.ReadOnlyRegistry()
 	roExecutor := tools.NewExecutor(roRegistry, permission.AllowAllPolicy{})

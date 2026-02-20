@@ -81,6 +81,13 @@ func (t *TuiIO) SetTokens(n int) {
 	t.program.Send(tokensMsg{n: n})
 }
 
+// --- SubAgentReporter ---
+
+// ReportSubAgentProgress sends sub-agent progress to the TUI for rendering.
+func (t *TuiIO) ReportSubAgentProgress(p SubAgentProgress) {
+	t.program.Send(subAgentProgressMsg{progress: p})
+}
+
 // --- ToolCanceller implementation ---
 
 // SetToolCancel registers the cancel function for the currently running tool.

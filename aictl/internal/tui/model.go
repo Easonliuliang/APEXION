@@ -43,6 +43,7 @@ type errorMsg struct{ text string }
 type tokensMsg struct{ n int }
 type agentDoneMsg struct{ err error }
 type toolTickMsg struct{}
+type subAgentProgressMsg struct{ progress SubAgentProgress }
 
 // ---------- spinner activity kinds ----------
 
@@ -206,6 +207,10 @@ type Model struct {
 
 	cancelToolFn func() bool // injected from TuiIO to cancel running tool
 	cancelLoopFn func() bool // injected from TuiIO to cancel entire agent loop
+
+	// sub-agent progress (shown when a "task" tool is running)
+	subAgentTool  string // sub-agent's current tool name
+	subAgentCount int    // sub-agent's total tool calls
 
 	cfg     TUIConfig // version/provider info
 	program *tea.Program
@@ -442,6 +447,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toolStartTime = time.Now()
 		m.spinnerKind = spinnerTool
 		m.currentToolConfirmed = false
+		m.subAgentTool = ""
+		m.subAgentCount = 0
 		m.currentTool = &toolCallState{
 			name:   msg.name,
 			params: formatToolParams(msg.params),
@@ -465,6 +472,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toolStartTime = time.Time{}
 		m.spinnerKind = spinnerNone
 		m.currentTool = nil
+		m.subAgentTool = ""
+		m.subAgentCount = 0
+
+	case subAgentProgressMsg:
+		m.subAgentTool = msg.progress.ToolName
+		m.subAgentCount = msg.progress.ToolCount
 
 	case confirmMsg:
 		m.confirming = true
@@ -559,12 +572,20 @@ func (m Model) View() string {
 
 // ---------- tool call rendering ----------
 
-// renderToolRunning renders an in-flight tool call block with spinner (2 lines).
+// renderToolRunning renders an in-flight tool call block with spinner (2-3 lines).
 func (m *Model) renderToolRunning(tc *toolCallState) string {
 	name := toolNameStyle.Render(tc.name)
 	params := toolParamStyle.Render(tc.params)
 	elapsed := int(time.Since(m.toolStartTime).Seconds())
 	status := fmt.Sprintf("%s running... (%ds)  esc to cancel", m.spinner.View(), elapsed)
+
+	// Sub-agent progress: show current tool on an extra line
+	if tc.name == "task" && m.subAgentTool != "" {
+		subLine := toolParamStyle.Render(fmt.Sprintf("  └ %s  (%d tool calls)", m.subAgentTool, m.subAgentCount))
+		inner := name + "  " + params + "\n" + subLine + "\n" + status
+		return toolBorderStyle.Render(inner)
+	}
+
 	inner := name + "  " + params + "\n" + status
 	return toolBorderStyle.Render(inner)
 }

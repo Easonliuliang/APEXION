@@ -9,6 +9,7 @@ import (
 
 	"github.com/aictl/aictl/internal/agent"
 	"github.com/aictl/aictl/internal/tools"
+	"github.com/aictl/aictl/internal/tui"
 )
 
 // runChat starts the interactive chat (REPL) mode.
@@ -21,7 +22,6 @@ func runChat() error {
 		os.Exit(1)
 	}
 
-	// Use provider default model if none specified
 	if cfg.Model == "" {
 		cfg.Model = p.DefaultModel()
 	}
@@ -30,9 +30,31 @@ func runChat() error {
 	isAutoApprove := cfg.Permissions.Mode == "auto-approve"
 	executor := tools.NewExecutor(registry, isAutoApprove, cfg.Permissions.AutoApproveTools)
 
-	a := agent.New(p, executor, cfg)
+	if useTUI {
+		return tui.RunTUI(func(ui tui.IO) error {
+			executor.SetConfirmer(ui)
+			a := agent.New(p, executor, cfg, ui)
 
-	// Graceful shutdown on SIGINT/SIGTERM
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			go func() {
+				<-sigCh
+				cancel()
+			}()
+
+			return a.Run(ctx)
+		})
+	}
+
+	// Plain IO mode (default)
+	ui := tui.NewPlainIO()
+	executor.SetConfirmer(ui)
+
+	a := agent.New(p, executor, cfg, ui)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

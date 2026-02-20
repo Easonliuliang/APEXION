@@ -4,13 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
+
+// Confirmer is a minimal interface the Executor uses for permission prompts.
+// This avoids a circular import with the tui package.
+type Confirmer interface {
+	Confirm(name, params string, level PermissionLevel) bool
+}
 
 // Executor 负责执行工具调用，包含权限检查和超时控制
 type Executor struct {
 	registry       *Registry
+	confirmer      Confirmer
 	defaultTimeout time.Duration
 	maxOutputBytes int
 	autoApprove    bool
@@ -32,6 +38,12 @@ func NewExecutor(registry *Registry, autoApprove bool, autoApproveTools []string
 	}
 }
 
+// SetConfirmer injects the UI-layer confirmer (called after New to avoid
+// circular dependencies between agent, tui, and tools packages).
+func (e *Executor) SetConfirmer(c Confirmer) {
+	e.confirmer = c
+}
+
 // Registry returns the underlying tool registry.
 func (e *Executor) Registry() *Registry {
 	return e.registry
@@ -44,14 +56,15 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		return ToolResult{Content: fmt.Sprintf("unknown tool: %s", name), IsError: true}
 	}
 
-	// 权限检查：只读工具自动通过，其他需要确认
+	// 权限检查
 	if !tool.IsReadOnly() && !e.autoApprove && !e.autoApproveSet[name] {
-		if !e.confirmWithUser(name, string(params)) {
-			return ToolResult{Content: "tool execution cancelled by user", IsError: true}
+		if e.confirmer != nil {
+			if !e.confirmer.Confirm(name, string(params), tool.PermissionLevel()) {
+				return ToolResult{Content: "tool execution cancelled by user", IsError: true}
+			}
 		}
 	}
 
-	// 超时控制
 	ctx, cancel := context.WithTimeout(ctx, e.defaultTimeout)
 	defer cancel()
 
@@ -60,24 +73,10 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		return ToolResult{Content: fmt.Sprintf("error: %v", err), IsError: true}
 	}
 
-	// 输出截断
 	if len(result.Content) > e.maxOutputBytes {
 		result.Content = result.Content[:e.maxOutputBytes] + "\n[Truncated: output too large]"
 		result.Truncated = true
 	}
 
 	return result
-}
-
-// confirmWithUser 在终端询问用户确认
-func (e *Executor) confirmWithUser(toolName, params string) bool {
-	// 截断过长的参数显示
-	display := params
-	if len(display) > 200 {
-		display = display[:200] + "..."
-	}
-	fmt.Printf("\n--- Tool: %s ---\n%s\n[y/N] ", toolName, display)
-	var answer string
-	fmt.Scanln(&answer)
-	return strings.ToLower(strings.TrimSpace(answer)) == "y"
 }

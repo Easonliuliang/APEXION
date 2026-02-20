@@ -14,6 +14,7 @@ var (
 	autoApprove  bool
 	modelFlag    string
 	providerFlag string
+	useTUI       bool
 )
 
 // Execute is the main entry point called from main.go.
@@ -35,6 +36,7 @@ func Execute(version, commit, date string) {
 	rootCmd.PersistentFlags().BoolVar(&autoApprove, "auto-approve", false, "skip all tool execution confirmations")
 	rootCmd.PersistentFlags().StringVarP(&modelFlag, "model", "m", "", "override model")
 	rootCmd.PersistentFlags().StringVarP(&providerFlag, "provider", "p", "", "override provider")
+	rootCmd.PersistentFlags().BoolVar(&useTUI, "tui", false, "use bubbletea TUI mode")
 
 	// Subcommands
 	rootCmd.AddCommand(newRunCmd())

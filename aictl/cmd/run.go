@@ -9,6 +9,7 @@ import (
 
 	"github.com/aictl/aictl/internal/agent"
 	"github.com/aictl/aictl/internal/tools"
+	"github.com/aictl/aictl/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -52,7 +53,30 @@ func runOnce(prompt string) error {
 	isAutoApprove := cfg.Permissions.Mode == "auto-approve"
 	executor := tools.NewExecutor(registry, isAutoApprove, cfg.Permissions.AutoApproveTools)
 
-	a := agent.New(p, executor, cfg)
+	if useTUI {
+		return tui.RunTUI(func(ui tui.IO) error {
+			executor.SetConfirmer(ui)
+			a := agent.New(p, executor, cfg, ui)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			go func() {
+				<-sigCh
+				cancel()
+			}()
+
+			return a.RunOnce(ctx, prompt)
+		})
+	}
+
+	// Plain IO mode (default)
+	ui := tui.NewPlainIO()
+	executor.SetConfirmer(ui)
+
+	a := agent.New(p, executor, cfg, ui)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

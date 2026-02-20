@@ -1,0 +1,10 @@
+# Compiled binary
+aictl
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store

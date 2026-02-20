@@ -31,6 +31,19 @@ func (p *AnthropicProvider) Name() string        { return "anthropic" }
 func (p *AnthropicProvider) Models() []string     { return []string{p.model} }
 func (p *AnthropicProvider) DefaultModel() string { return p.model }
 
+func (p *AnthropicProvider) ContextWindow() int {
+	switch {
+	case strings.Contains(p.model, "opus"):
+		return 200000
+	case strings.Contains(p.model, "sonnet"):
+		return 200000
+	case strings.Contains(p.model, "haiku"):
+		return 200000
+	default:
+		return 200000
+	}
+}
+
 func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest) (<-chan Event, error) {
 	msgs := p.buildMessages(req.Messages)
 	tools := p.buildTools(req.Tools)

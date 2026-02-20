@@ -132,4 +132,7 @@ type Provider interface {
 
 	// DefaultModel 返回默认模型
 	DefaultModel() string
+
+	// ContextWindow returns the default context window size for the current model.
+	ContextWindow() int
 }

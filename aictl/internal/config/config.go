@@ -30,6 +30,13 @@ type PermissionConfig struct {
 
 	// AllowedCommands: bash 命令白名单（前缀匹配，如 ["go test", "go build"]）
 	AllowedCommands []string `yaml:"allowed_commands"`
+
+	// AllowedPaths: 允许修改的文件路径 glob 模式（如 ["./src/**", "./tests/**"]）
+	// 空列表 = 允许所有路径
+	AllowedPaths []string `yaml:"allowed_paths"`
+
+	// DeniedCommands: 命令黑名单（即使 auto-approve/yolo 模式下也强制拒绝）
+	DeniedCommands []string `yaml:"denied_commands"`
 }
 
 // Config 是 aictl 的完整配置结构
@@ -51,6 +58,10 @@ type Config struct {
 
 	// MaxIterations agent loop 最大迭代次数（默认 25）
 	MaxIterations int `yaml:"max_iterations"`
+
+	// ContextWindow overrides the provider's default context window size.
+	// 0 = use provider default.
+	ContextWindow int `yaml:"context_window"`
 }
 
 // DefaultConfig 返回默认配置

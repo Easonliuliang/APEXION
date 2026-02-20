@@ -56,6 +56,21 @@ func (p *OpenAIProvider) Name() string        { return p.name }
 func (p *OpenAIProvider) Models() []string     { return []string{p.model} }
 func (p *OpenAIProvider) DefaultModel() string { return p.model }
 
+func (p *OpenAIProvider) ContextWindow() int {
+	switch {
+	case strings.Contains(p.model, "gpt-4o"):
+		return 128000
+	case strings.Contains(p.model, "gpt-4"):
+		return 128000
+	case strings.Contains(p.model, "o1"), strings.Contains(p.model, "o3"):
+		return 200000
+	case strings.Contains(p.model, "deepseek"):
+		return 64000
+	default:
+		return 128000
+	}
+}
+
 func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (<-chan Event, error) {
 	msgs := p.buildMessages(req)
 	tools := p.buildTools(req.Tools)

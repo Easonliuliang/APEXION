@@ -178,45 +178,76 @@ Admitting uncertainty and using a tool is always correct.
 Fabricating a confident answer is always wrong.
 </anti_hallucination>`
 
+// ProviderFactory creates a Provider from a config. Used for /provider hot-swap.
+type ProviderFactory func(cfg *config.Config) (provider.Provider, error)
+
 // Agent orchestrates the interactive loop between user, LLM, and tools.
 type Agent struct {
-	provider     provider.Provider
-	executor     *tools.Executor
-	config       *config.Config
-	session      *session.Session
-	systemPrompt string
-	io           tui.IO
+	provider        provider.Provider
+	executor        *tools.Executor
+	config          *config.Config
+	session         *session.Session
+	store           session.Store
+	basePrompt      string // system prompt without identity suffix
+	systemPrompt    string
+	io              tui.IO
+	summarizer      session.Summarizer
+	providerFactory ProviderFactory
 }
 
 // New creates a new Agent with the given IO implementation.
 // Pass tui.NewPlainIO() for plain terminal mode.
-func New(p provider.Provider, exec *tools.Executor, cfg *config.Config, ui tui.IO) *Agent {
-	sp := defaultSystemPrompt
+func New(p provider.Provider, exec *tools.Executor, cfg *config.Config, ui tui.IO, store session.Store) *Agent {
+	return NewWithSession(p, exec, cfg, ui, store, session.New())
+}
+
+// NewWithSession creates a new Agent with an existing session.
+func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Config, ui tui.IO, store session.Store, sess *session.Session) *Agent {
+	base := defaultSystemPrompt
 	if cfg.SystemPrompt != "" {
-		sp = cfg.SystemPrompt
+		base = cfg.SystemPrompt
 	}
 
 	// Append project context from AICTL.md / .aictl/context.md
 	cwd, _ := os.Getwd()
 	if ctx := loadProjectContext(cwd); ctx != "" {
-		sp += ctx
+		base += ctx
 	}
 
-	return &Agent{
-		provider:     p,
-		executor:     exec,
-		config:       cfg,
-		session:      session.New(),
-		systemPrompt: sp,
-		io:           ui,
+	a := &Agent{
+		provider:   p,
+		executor:   exec,
+		config:     cfg,
+		session:    sess,
+		store:      store,
+		basePrompt: base,
+		io:         ui,
+		summarizer: &session.LLMSummarizer{Provider: p},
 	}
+	a.rebuildSystemPrompt()
+	return a
+}
+
+// SetProviderFactory sets the factory function for /provider hot-swap.
+func (a *Agent) SetProviderFactory(f ProviderFactory) {
+	a.providerFactory = f
+}
+
+// rebuildSystemPrompt appends a dynamic identity suffix to basePrompt.
+// Call after changing provider or model.
+func (a *Agent) rebuildSystemPrompt() {
+	model := a.config.Model
+	if model == "" {
+		model = a.provider.DefaultModel()
+	}
+	a.systemPrompt = a.basePrompt + fmt.Sprintf(
+		"\n\nYou are powered by %s (provider: %s, model: %s). "+
+			"When asked about your identity, state these facts. Never claim to be a different model.",
+		a.config.Provider, a.config.Provider, model)
 }
 
 // Run starts the interactive REPL loop.
 func (a *Agent) Run(ctx context.Context) error {
-	a.io.SystemMessage("aictl — type your request, /quit to exit")
-	a.io.SystemMessage(strings.Repeat("-", 50))
-
 	for {
 		input, err := a.io.ReadInput()
 		if err != nil {
@@ -231,7 +262,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		// Slash commands are intercepted before sending to LLM.
 		if strings.HasPrefix(input, "/") {
-			handled, shouldQuit := a.handleSlashCommand(input)
+			handled, shouldQuit := a.handleSlashCommand(ctx, input)
 			if shouldQuit {
 				return nil
 			}
@@ -252,14 +283,14 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err := a.runAgentLoop(ctx); err != nil {
 			if ctx.Err() != nil {
 				a.io.SystemMessage("\nInterrupted.")
-				_ = session.Save(a.session)
+				_ = a.store.Save(a.session)
 				return ctx.Err()
 			}
 			a.io.Error(err.Error())
 		}
 	}
 
-	_ = session.Save(a.session)
+	_ = a.store.Save(a.session)
 	return nil
 }
 
@@ -278,11 +309,19 @@ func (a *Agent) RunOnce(ctx context.Context, prompt string) error {
 
 // handleSlashCommand processes built-in commands.
 // Returns (handled, shouldQuit).
-func (a *Agent) handleSlashCommand(cmd string) (bool, bool) {
+func (a *Agent) handleSlashCommand(ctx context.Context, input string) (bool, bool) {
+	// Parse command and arguments.
+	parts := strings.SplitN(strings.TrimSpace(input), " ", 2)
+	cmd := parts[0]
+	arg := ""
+	if len(parts) > 1 {
+		arg = strings.TrimSpace(parts[1])
+	}
+
 	switch cmd {
 	case "/quit", "/exit", "/q":
 		a.io.SystemMessage("Bye.")
-		_ = session.Save(a.session)
+		_ = a.store.Save(a.session)
 		return true, true
 	case "/clear":
 		a.session.Clear()
@@ -294,9 +333,220 @@ func (a *Agent) handleSlashCommand(cmd string) (bool, bool) {
 	case "/cost":
 		a.io.SystemMessage(fmt.Sprintf("Tokens used: %d", a.session.TokensUsed))
 		return true, false
+	case "/compact":
+		return a.handleCompact(ctx), false
+	case "/help":
+		return a.handleHelp(), false
+	case "/model":
+		return a.handleModel(arg), false
+	case "/provider":
+		return a.handleProvider(arg), false
+	case "/config":
+		return a.handleConfig(), false
+	case "/save":
+		return a.handleSave(), false
+	case "/sessions":
+		return a.handleSessions(), false
+	case "/resume":
+		return a.handleResume(arg), false
 	default:
 		return false, false
 	}
+}
+
+func (a *Agent) handleCompact(ctx context.Context) bool {
+	if a.summarizer == nil {
+		a.io.SystemMessage("Summarizer not configured.")
+		return true
+	}
+	summary, err := a.summarizer.Summarize(ctx, a.session.Summary, a.session.Messages)
+	if err != nil {
+		a.io.Error("Compact failed: " + err.Error())
+		return true
+	}
+	a.session.Summary = summary
+	a.session.Messages = session.TruncateSession(a.session.Messages, 10)
+	a.io.SystemMessage(fmt.Sprintf("Compacted. %d messages retained.\nSummary:\n%s",
+		len(a.session.Messages), truncate(summary, 300)))
+	return true
+}
+
+func (a *Agent) handleHelp() bool {
+	help := `Available commands:
+  /help              Show this help message
+  /model <name>      Switch model (e.g. /model claude-haiku-4-5-20251001)
+  /provider <name>   Switch provider (e.g. /provider deepseek)
+  /config            Show current configuration
+  /compact           Manually trigger context compaction
+  /save              Save current session to disk
+  /sessions          List saved sessions
+  /resume <id>       Resume a saved session (use short ID prefix)
+  /history           Show message history
+  /cost              Show token usage
+  /clear             Clear message history
+  /quit              Save and exit`
+	a.io.SystemMessage(help)
+	return true
+}
+
+func (a *Agent) handleModel(name string) bool {
+	if name == "" {
+		a.io.SystemMessage(fmt.Sprintf("Current model: %s\nUsage: /model <name>", a.config.Model))
+		return true
+	}
+	old := a.config.Model
+	a.config.Model = name
+	if old == "" {
+		old = a.provider.DefaultModel()
+	}
+	a.rebuildSystemPrompt()
+	a.io.SystemMessage(fmt.Sprintf("Model switched: %s → %s", old, name))
+	return true
+}
+
+func (a *Agent) handleProvider(name string) bool {
+	if name == "" {
+		a.io.SystemMessage(fmt.Sprintf("Current provider: %s\nUsage: /provider <name>", a.config.Provider))
+		return true
+	}
+	if a.providerFactory == nil {
+		a.io.Error("Provider hot-swap not available.")
+		return true
+	}
+	oldName := a.config.Provider
+	a.config.Provider = name
+	// Reset model so the new provider uses its default.
+	a.config.Model = ""
+
+	p, err := a.providerFactory(a.config)
+	if err != nil {
+		// Revert on failure.
+		a.config.Provider = oldName
+		a.io.Error(fmt.Sprintf("Failed to switch provider: %v", err))
+		return true
+	}
+	a.provider = p
+	a.summarizer = &session.LLMSummarizer{Provider: p}
+	a.rebuildSystemPrompt()
+	a.io.SystemMessage(fmt.Sprintf("Provider switched: %s → %s (model: %s)",
+		oldName, name, p.DefaultModel()))
+	return true
+}
+
+func (a *Agent) handleConfig() bool {
+	model := a.config.Model
+	if model == "" {
+		model = a.provider.DefaultModel()
+	}
+	info := fmt.Sprintf(`Current configuration:
+  Provider:       %s
+  Model:          %s
+  Context window: %d
+  Max iterations: %d
+  Permission:     %s
+  Session ID:     %s
+  Messages:       %d
+  Tokens used:    %d`,
+		a.config.Provider,
+		model,
+		a.provider.ContextWindow(),
+		a.config.MaxIterations,
+		a.config.Permissions.Mode,
+		a.session.ID,
+		len(a.session.Messages),
+		a.session.TokensUsed,
+	)
+	a.io.SystemMessage(info)
+	return true
+}
+
+func (a *Agent) handleSave() bool {
+	if err := a.store.Save(a.session); err != nil {
+		a.io.Error("Save failed: " + err.Error())
+		return true
+	}
+	a.io.SystemMessage(fmt.Sprintf("Session saved: %s (%d messages)",
+		a.session.ID[:8], len(a.session.Messages)))
+	return true
+}
+
+func (a *Agent) handleSessions() bool {
+	infos, err := a.store.List()
+	if err != nil {
+		a.io.Error("Failed to list sessions: " + err.Error())
+		return true
+	}
+	if len(infos) == 0 {
+		a.io.SystemMessage("No saved sessions.")
+		return true
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Saved sessions (%d):\n", len(infos)))
+	for i, info := range infos {
+		if i >= 20 {
+			sb.WriteString(fmt.Sprintf("  ... and %d more\n", len(infos)-20))
+			break
+		}
+		sb.WriteString(fmt.Sprintf("  %s  %s  %d msgs  %d tokens\n",
+			info.ID[:8],
+			info.CreatedAt.Format("2006-01-02 15:04"),
+			info.Messages,
+			info.Tokens,
+		))
+	}
+	sb.WriteString("Use /resume <id> to restore a session.")
+	a.io.SystemMessage(sb.String())
+	return true
+}
+
+func (a *Agent) handleResume(idPrefix string) bool {
+	if idPrefix == "" {
+		a.io.SystemMessage("Usage: /resume <session-id-prefix>")
+		return true
+	}
+
+	infos, err := a.store.List()
+	if err != nil {
+		a.io.Error("Failed to list sessions: " + err.Error())
+		return true
+	}
+
+	// Find sessions matching the prefix.
+	var matches []session.SessionInfo
+	for _, info := range infos {
+		if strings.HasPrefix(info.ID, idPrefix) {
+			matches = append(matches, info)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		a.io.Error(fmt.Sprintf("No session found matching prefix %q", idPrefix))
+		return true
+	case 1:
+		// Unique match — load it.
+	default:
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Ambiguous prefix %q matches %d sessions:\n", idPrefix, len(matches)))
+		for _, m := range matches {
+			sb.WriteString(fmt.Sprintf("  %s  %s\n", m.ID[:12], m.CreatedAt.Format("2006-01-02 15:04")))
+		}
+		sb.WriteString("Provide a longer prefix.")
+		a.io.SystemMessage(sb.String())
+		return true
+	}
+
+	loaded, err := a.store.Load(matches[0].ID)
+	if err != nil {
+		a.io.Error("Failed to load session: " + err.Error())
+		return true
+	}
+
+	a.session = loaded
+	a.io.SystemMessage(fmt.Sprintf("Resumed session %s (%d messages, %d tokens)",
+		loaded.ID[:8], len(loaded.Messages), loaded.TokensUsed))
+	return true
 }
 
 func formatHistory(messages []provider.Message) string {

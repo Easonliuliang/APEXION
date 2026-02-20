@@ -9,9 +9,9 @@ import (
 
 // RunTUI starts the bubbletea program in alt-screen mode and runs agentFn
 // concurrently. It blocks until either the agent finishes or the user quits.
-func RunTUI(agentFn func(io IO) error) error {
+func RunTUI(cfg TUIConfig, agentFn func(io IO) error) error {
 	inputCh := make(chan inputResult, 1)
-	model := NewModel(inputCh)
+	model := NewModel(inputCh, cfg)
 
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	model.program = p

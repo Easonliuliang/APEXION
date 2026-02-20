@@ -59,6 +59,15 @@ type toolCallState struct {
 	params string
 }
 
+// TUIConfig carries version/provider info for the welcome page and status bar.
+type TUIConfig struct {
+	Version     string // e.g. "v0.1.0"
+	Provider    string // e.g. "deepseek"
+	Model       string // e.g. "deepseek-chat"
+	SessionID   string // first 8 chars of session ID
+	ShowWelcome bool   // false for run mode (non-interactive)
+}
+
 // ---------- styles ----------
 
 var (
@@ -100,6 +109,37 @@ var (
 	toolErrorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("9")) // dark red
 
+	// Status bar styles
+	separatorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("238")) // dark gray line
+
+	statusBarBgStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("235"))
+
+	statusModelStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("235")).
+				Foreground(lipgloss.Color("2")). // green model name
+				Bold(true)
+
+	// Welcome box styles
+	welcomeBorderStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("8")).
+				Padding(0, 1)
+
+	welcomeTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("2")).
+				Bold(true)
+
+	welcomeLabelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("8"))
+
+	welcomeValueStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252"))
+
+	welcomeHintStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+
 	// Confirm styles
 	confirmBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder(), false, false, false, true).
@@ -112,12 +152,18 @@ var (
 					PaddingLeft(1)
 
 	confirmHintStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("3")). // yellow
-				Bold(true)
+				Background(lipgloss.Color("237")).
+				Foreground(lipgloss.Color("245")).
+				Padding(0, 2).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("238"))
 
 	confirmDangerHintStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("9")). // red
-				Bold(true)
+				Background(lipgloss.Color("237")).
+				Foreground(lipgloss.Color("203")). // subtle red text
+				Padding(0, 2).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("238"))
 )
 
 // ---------- Model ----------
@@ -127,25 +173,27 @@ const inputHeight = 1
 
 // Model is the bubbletea model managing the full TUI state.
 type Model struct {
-	viewport  viewport.Model
-	textinput textinput.Model
-	spinner   spinner.Model
-	width     int
-	height    int
+	viewport     viewport.Model
+	textinput    textinput.Model
+	spinner      spinner.Model
+	width        int
+	height       int
+	content     *strings.Builder // pointer to avoid copy panic in bubbletea
+	streaming   bool             // LLM text deltas are arriving
+	streamStart int              // byte offset in content where current stream began
+	inputMode   bool             // text input is active (waiting for user)
+	spinnerKind spinnerKind      // what the spinner is showing for
 
-	content     strings.Builder // accumulated output
-	streaming   bool            // LLM text deltas are arriving
-	streamStart int             // byte offset in content where current stream began
-	inputMode   bool            // text input is active (waiting for user)
-	spinnerKind spinnerKind     // what the spinner is showing for
+	currentTool          *toolCallState // in-flight tool call (nil when idle)
+	currentToolConfirmed bool           // true if tool was already shown in confirm block
 
-	currentTool *toolCallState // in-flight tool call (nil when idle)
-
-	confirming   bool                 // waiting for confirmation
+	confirming   bool                  // waiting for confirmation
 	confirmCh    chan bool             // send user's answer back to agent goroutine
 	confirmLevel tools.PermissionLevel // permission level of current confirmation
 
 	inputCh chan inputResult // send user input back to ReadInput()
+
+	noiseDropCount int // after terminal noise, drop next N single-char key events
 
 	quitting bool
 
@@ -153,13 +201,17 @@ type Model struct {
 	tokens   int
 	toolName string // current tool being executed (empty = none)
 
+	cfg     TUIConfig // version/provider info
 	program *tea.Program
+
+	mdRenderer      *glamour.TermRenderer // cached markdown renderer (avoids terminal queries)
+	mdRendererWidth int                   // width the renderer was created for
 }
 
 // NewModel creates the initial bubbletea model.
-func NewModel(inputCh chan inputResult) Model {
+func NewModel(inputCh chan inputResult, cfg TUIConfig) Model {
 	ti := textinput.New()
-	ti.Prompt = "> "
+	ti.Prompt = "❯ "
 	ti.CharLimit = 4096
 
 	vp := viewport.New(80, 24)
@@ -168,12 +220,21 @@ func NewModel(inputCh chan inputResult) Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = spinnerStyle
 
-	return Model{
-		viewport:  vp,
-		textinput: ti,
-		spinner:   sp,
-		inputCh:   inputCh,
+	m := Model{
+		viewport:     vp,
+		textinput:    ti,
+		spinner:      sp,
+		content:      &strings.Builder{},
+		inputCh:      inputCh,
+		cfg:          cfg,
 	}
+
+	if cfg.ShowWelcome {
+		m.content.WriteString(renderWelcome(cfg))
+		m.content.WriteString("\n")
+	}
+
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -188,7 +249,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		vpHeight := m.height - statusBarHeight - inputHeight
+		// Reserve 3 lines: 1 input + 1 separator + 1 status bar.
+		vpHeight := m.height - 3
 		if vpHeight < 1 {
 			vpHeight = 1
 		}
@@ -199,16 +261,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 
 	case spinner.TickMsg:
+		wasAtBottom := m.viewport.AtBottom()
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		if m.spinnerKind != spinnerNone {
 			m.viewport.SetContent(m.renderContent())
-			m.viewport.GotoBottom()
+			if wasAtBottom {
+				m.viewport.GotoBottom()
+			}
 		}
 		cmds = append(cmds, cmd)
 
 	case tea.KeyMsg:
-		switch msg.String() {
+		// Filter out terminal escape sequences leaking as key events.
+		// Terminal responses can be fragmented across multiple KeyMsgs;
+		// after detecting noise, drop a few subsequent single-char events
+		// that are likely trailing fragments (e.g. ESC is caught, but
+		// the following '\', '[', '?' leak as separate keys).
+		s := msg.String()
+		if isTerminalNoiseKey(s) {
+			m.noiseDropCount = 4
+			return m, nil
+		}
+		if s == "esc" {
+			// Bare ESC in input mode is likely the start of a split sequence.
+			if m.inputMode {
+				m.noiseDropCount = 4
+				return m, nil
+			}
+		}
+		if m.noiseDropCount > 0 && len(s) <= 2 {
+			m.noiseDropCount--
+			return m, nil
+		}
+		switch s {
 		case "ctrl+c":
 			if m.confirming && m.confirmCh != nil {
 				m.confirmCh <- false
@@ -224,11 +310,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			if m.confirming && m.confirmCh != nil {
-				// Enter = approve
 				m.confirmCh <- true
 				m.confirming = false
 				m.confirmCh = nil
-				m.appendLine(toolSuccessStyle.Render("  ✓ allowed"))
+				m.currentToolConfirmed = true // tool block already shown, skip re-render
 				return m, nil
 			}
 			if m.inputMode {
@@ -241,16 +326,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "esc":
 			if m.confirming && m.confirmCh != nil {
-				// Esc = deny
 				m.confirmCh <- false
 				m.confirming = false
 				m.confirmCh = nil
 				m.appendLine(toolErrorStyle.Render("  ✗ denied"))
 				return m, nil
 			}
-		}
+
+		// --- Keyboard scrolling (no mouse capture, like opencode) ---
+		case "pgup":
+			m.viewport.ViewUp()
+			return m, nil
+		case "pgdown":
+			m.viewport.ViewDown()
+			return m, nil
+		case "shift+up":
+			m.viewport.LineUp(3)
+			return m, nil
+		case "shift+down":
+			m.viewport.LineDown(3)
+			return m, nil
+		case "home":
+			m.viewport.GotoTop()
+			return m, nil
+		case "end":
+			m.viewport.GotoBottom()
+			return m, nil
+			}
 
 		if m.inputMode && !m.confirming {
+			// Block escape sequences and control chars from reaching textinput
+			if isControlKeyMsg(msg.String()) {
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.textinput, cmd = m.textinput.Update(msg)
 			cmds = append(cmds, cmd)
@@ -291,15 +399,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toolStartMsg:
 		m.toolName = msg.name
 		m.spinnerKind = spinnerTool
+		m.currentToolConfirmed = false
 		m.currentTool = &toolCallState{
 			name:   msg.name,
 			params: formatToolParams(msg.params),
 		}
 
 	case toolDoneMsg:
-		// Render the completed tool block into content
 		if m.currentTool != nil {
-			m.appendLine(m.renderToolDone(m.currentTool, msg.result, msg.isErr))
+			if m.currentToolConfirmed {
+				if msg.isErr {
+					m.appendLine(toolErrorStyle.Render("  ✗ " + truncateStr(msg.result, 200)))
+				} else {
+					summary := truncateStr(strings.ReplaceAll(msg.result, "\n", " "), 120)
+					m.appendLine(toolSuccessStyle.Render("  ✓ " + summary))
+				}
+			} else {
+				m.appendLine(m.renderToolDone(m.currentTool, msg.result, msg.isErr))
+			}
 		}
 		m.toolName = ""
 		m.spinnerKind = spinnerNone
@@ -326,9 +443,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Update viewport
+	// Update viewport content; only auto-scroll if user was already at bottom.
+	wasAtBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(m.renderContent())
-	m.viewport.GotoBottom()
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg:
+		// User interaction — don't force scroll to bottom.
+	default:
+		// Agent output — only follow stream if user hasn't scrolled up.
+		if wasAtBottom {
+			m.viewport.GotoBottom()
+		}
+	}
 
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
@@ -342,28 +468,48 @@ func (m Model) View() string {
 		return ""
 	}
 
-	// Status bar
-	status := fmt.Sprintf(" tokens: %d", m.tokens)
-	if m.toolName != "" {
-		status += fmt.Sprintf(" | tool: %s", m.toolName)
+	// Status bar: model │ tokens: N │ tool: name
+	modelName := m.cfg.Model
+	if modelName == "" {
+		modelName = "unknown"
 	}
-	bar := statusBarStyle.Width(m.width).Render(status)
+	status := statusModelStyle.Render(" "+modelName) + statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
+	if m.toolName != "" {
+		status += statusBarStyle.Render(fmt.Sprintf(" │ tool: %s", m.toolName))
+	}
+	bar := separatorStyle.Width(m.width).Render(strings.Repeat("─", m.width)) + "\n" +
+		statusBarBgStyle.Width(m.width).Render(status)
 
 	// Input line
 	var input string
 	if m.confirming {
 		if m.confirmLevel >= tools.PermissionDangerous {
-			input = confirmDangerHintStyle.Render("  ⚠ Enter = allow • Esc = deny")
+			input = confirmDangerHintStyle.Render("⚠ dangerous  enter accept  esc deny")
 		} else {
-			input = confirmHintStyle.Render("  Enter = allow • Esc = deny")
+			input = confirmHintStyle.Render("enter accept  esc deny")
 		}
 	} else if m.inputMode {
 		input = m.textinput.View()
 	} else {
-		input = ""
+		// Agent is working — show dimmed prompt so screen doesn't look dead.
+		input = systemStyle.Render("❯")
 	}
 
-	return m.viewport.View() + "\n" + bar + "\n" + input
+	// Build layout: content + input tight, then gap, then status bar at bottom.
+	// When content is short, input sits right below content (no gap in between).
+	// When content overflows, viewport handles scrolling.
+	rawContent := m.renderContent()
+	contentHeight := lipgloss.Height(rawContent)
+	// Fixed bottom block: 1 (input) + 2 (separator + statusbar) = 3 lines
+	const bottomBlock = 3
+	if contentHeight+bottomBlock <= m.height {
+		// Content fits: content → input → bar packed at top, blank fills bottom.
+		blank := strings.Repeat("\n", m.height-contentHeight-bottomBlock)
+		return rawContent + "\n" + input + "\n" + bar + blank
+	}
+
+	// Content overflows: use viewport for scrolling.
+	return m.viewport.View() + "\n" + input + "\n" + bar
 }
 
 // ---------- tool call rendering ----------
@@ -433,20 +579,35 @@ func (m *Model) renderContent() string {
 
 // ---------- markdown rendering ----------
 
-// replaceStreamWithMarkdown replaces the raw streamed text (from streamStart
-// to end of content) with glamour-rendered markdown.
-func (m *Model) replaceStreamWithMarkdown(fullText string) {
+// getMarkdownRenderer returns a cached glamour renderer, recreating it only
+// when the terminal width changes. Uses DarkStyle to avoid terminal background
+// color queries that produce escape sequence responses leaking into textinput.
+func (m *Model) getMarkdownRenderer() *glamour.TermRenderer {
 	width := m.width
 	if width <= 0 {
 		width = 80
 	}
-
+	wrapWidth := width - 4
+	if m.mdRenderer != nil && m.mdRendererWidth == wrapWidth {
+		return m.mdRenderer
+	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(width-4),
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(wrapWidth),
 	)
 	if err != nil {
-		// Fallback: keep raw text, just ensure trailing newline
+		return nil
+	}
+	m.mdRenderer = r
+	m.mdRendererWidth = wrapWidth
+	return r
+}
+
+// replaceStreamWithMarkdown replaces the raw streamed text (from streamStart
+// to end of content) with glamour-rendered markdown.
+func (m *Model) replaceStreamWithMarkdown(fullText string) {
+	r := m.getMarkdownRenderer()
+	if r == nil {
 		s := m.content.String()
 		if len(s) > 0 && s[len(s)-1] != '\n' {
 			m.content.WriteString("\n")
@@ -469,6 +630,63 @@ func (m *Model) replaceStreamWithMarkdown(fullText string) {
 	m.content.WriteString(before)
 	m.content.WriteString(strings.TrimRight(rendered, "\n"))
 	m.content.WriteString("\n")
+}
+
+// ---------- welcome page ----------
+
+func renderWelcome(cfg TUIConfig) string {
+	// Pixel cat logo
+	cat := []string{
+		"█▀▀▀▀▀█",
+		"█ ●  ● █",
+		"█  ▲  █",
+		"█ ▄▄▄ █",
+		" ▀▀▀▀▀ ",
+	}
+
+	version := cfg.Version
+	if version == "" {
+		version = "dev"
+	}
+
+	// Right-side info lines (aligned with cat lines)
+	info := []string{
+		welcomeLabelStyle.Render("Provider: ") + welcomeValueStyle.Render(cfg.Provider),
+		welcomeLabelStyle.Render("Model:    ") + welcomeValueStyle.Render(cfg.Model),
+		welcomeLabelStyle.Render("Session:  ") + welcomeValueStyle.Render(cfg.SessionID),
+		"",
+		welcomeHintStyle.Render("/help 查看命令  /compact 压缩上下文  pgup/pgdn 滚动"),
+	}
+
+	// Combine cat + info side by side
+	var lines []string
+	catWidth := 10 // visual width of cat lines + padding
+	for i := 0; i < len(cat) || i < len(info); i++ {
+		left := ""
+		if i < len(cat) {
+			left = cat[i]
+		}
+		right := ""
+		if i < len(info) {
+			right = info[i]
+		}
+		// Pad left to fixed width using runewidth for accurate visual width
+		visualWidth := lipgloss.Width(left)
+		padding := catWidth - visualWidth
+		if padding < 0 {
+			padding = 0
+		}
+		lines = append(lines, left+strings.Repeat(" ", padding)+right)
+	}
+	lines = append(lines, strings.Repeat(" ", catWidth)+welcomeHintStyle.Render("/sessions 历史  /resume <id> 恢复"))
+
+	inner := strings.Join(lines, "\n")
+
+	title := welcomeTitleStyle.Render(fmt.Sprintf("aictl %s", version))
+
+	box := welcomeBorderStyle.Render(inner)
+
+	return title + "\n" + box
 }
 
 // ---------- helpers ----------
@@ -496,4 +714,44 @@ func truncateStr(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func isTerminalNoiseKey(s string) bool {
+	// OSC responses: ]11;rgb:... background color, etc.
+	if strings.Contains(s, ";rgb:") || strings.HasPrefix(s, "]") || strings.HasPrefix(s, "alt+]") {
+		return true
+	}
+
+	// SGR mouse reports: \;N;NM or \;N;Nm
+	if (strings.HasSuffix(s, "M") || strings.HasSuffix(s, "m")) && strings.Contains(s, ";") {
+		return true
+	}
+
+	// CSI mouse/SGR sequences: [<... or alt+[<...
+	if strings.HasPrefix(s, "[<") || strings.HasPrefix(s, "alt+[<") {
+		return true
+	}
+
+	// DA (Device Attributes) responses: [?...c
+	if strings.HasPrefix(s, "[?") || strings.HasPrefix(s, "alt+[?") {
+		return true
+	}
+
+	// CSI parameter sequences: [N... (numeric params)
+	if len(s) > 1 && s[0] == '[' && len(s) > 1 && s[1] >= '0' && s[1] <= '9' {
+		return true
+	}
+
+	return false
+}
+
+// isControlKeyMsg returns true if the key string contains non-printable
+// control characters that should not be forwarded to the text input.
+func isControlKeyMsg(s string) bool {
+	for _, r := range s {
+		if r == '\x1b' || (r < 0x20 && r != '\t' && r != '\n' && r != '\r') {
+			return true
+		}
+	}
+	return false
 }

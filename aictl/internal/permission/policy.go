@@ -2,6 +2,7 @@ package permission
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 
 	"github.com/aictl/aictl/internal/config"
@@ -9,9 +10,11 @@ import (
 
 // DefaultPolicy implements permission checks based on config.
 type DefaultPolicy struct {
-	AutoApprove      bool
-	AutoApproveTools map[string]bool
-	AllowedCommands  []string
+	mode             string
+	autoApproveTools map[string]bool
+	allowedCommands  []string
+	deniedCommands   []string
+	allowedPaths     []string
 }
 
 // NewDefaultPolicy creates a policy from config.
@@ -20,48 +23,122 @@ func NewDefaultPolicy(cfg *config.PermissionConfig) *DefaultPolicy {
 	for _, name := range cfg.AutoApproveTools {
 		approveTools[name] = true
 	}
-
-	autoApprove := cfg.Mode == "auto-approve" || cfg.Mode == "yolo"
-
 	return &DefaultPolicy{
-		AutoApprove:      autoApprove,
-		AutoApproveTools: approveTools,
-		AllowedCommands:  cfg.AllowedCommands,
+		mode:             cfg.Mode,
+		autoApproveTools: approveTools,
+		allowedCommands:  cfg.AllowedCommands,
+		deniedCommands:   cfg.DeniedCommands,
+		allowedPaths:     cfg.AllowedPaths,
 	}
 }
 
-// Check determines whether a tool call is allowed.
+// Check determines whether a tool call is allowed, denied, or needs confirmation.
 func (p *DefaultPolicy) Check(toolName string, params json.RawMessage) Decision {
-	if p.AutoApprove {
-		return Allow
+	// Denied commands override everything (even yolo mode).
+	if toolName == "bash" {
+		cmd := extractField(params, "command")
+		if p.isCommandDenied(cmd) {
+			return Deny
+		}
 	}
-	if p.AutoApproveTools[toolName] {
+
+	// Path restriction for write tools (even in yolo mode).
+	if toolName == "edit_file" || toolName == "write_file" {
+		path := extractField(params, "file_path")
+		if path != "" && !p.isPathAllowed(path) {
+			return Deny
+		}
+	}
+
+	// Yolo: allow everything not explicitly denied.
+	if p.mode == "yolo" {
 		return Allow
 	}
 
-	// For bash tool, check command whitelist
-	if toolName == "bash" {
-		var args struct {
-			Command string `json:"command"`
-		}
-		if err := json.Unmarshal(params, &args); err == nil {
-			if p.IsCommandAllowed(args.Command) {
+	// Auto-approve tools (read-only tools, user-configured list).
+	if p.autoApproveTools[toolName] {
+		return Allow
+	}
+
+	// Auto-approve mode: check command whitelist for bash.
+	if p.mode == "auto-approve" {
+		if toolName == "bash" {
+			cmd := extractField(params, "command")
+			if p.isCommandAllowed(cmd) {
 				return Allow
 			}
+			return NeedConfirmation
 		}
-		return NeedConfirmation
+		// Non-bash tools in auto-approve mode.
+		return Allow
 	}
 
+	// Interactive mode (default): need confirmation for non-auto-approved tools.
+	if toolName == "bash" {
+		cmd := extractField(params, "command")
+		if p.isCommandAllowed(cmd) {
+			return Allow
+		}
+	}
 	return NeedConfirmation
 }
 
-// IsCommandAllowed checks if a bash command matches any whitelist prefix.
-func (p *DefaultPolicy) IsCommandAllowed(cmd string) bool {
+// isCommandAllowed checks if a bash command matches any whitelist prefix.
+func (p *DefaultPolicy) isCommandAllowed(cmd string) bool {
 	cmd = strings.TrimSpace(cmd)
-	for _, allowed := range p.AllowedCommands {
+	for _, allowed := range p.allowedCommands {
 		if strings.HasPrefix(cmd, allowed) {
 			return true
 		}
 	}
 	return false
+}
+
+// isCommandDenied checks if a bash command matches any blacklist entry.
+func (p *DefaultPolicy) isCommandDenied(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+	for _, denied := range p.deniedCommands {
+		if strings.Contains(cmd, denied) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPathAllowed checks if a file path is within allowed path globs.
+// Empty allowedPaths means all paths are allowed.
+func (p *DefaultPolicy) isPathAllowed(path string) bool {
+	if len(p.allowedPaths) == 0 {
+		return true
+	}
+	for _, pattern := range p.allowedPaths {
+		if matched, _ := filepath.Match(pattern, path); matched {
+			return true
+		}
+		// Also try matching with ** style: check if path starts with the dir prefix.
+		if strings.HasSuffix(pattern, "/**") {
+			prefix := strings.TrimSuffix(pattern, "/**")
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// extractField extracts a string field from JSON params.
+func extractField(params json.RawMessage, field string) string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(params, &m); err != nil {
+		return ""
+	}
+	raw, ok := m[field]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }

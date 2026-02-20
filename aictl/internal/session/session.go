@@ -10,18 +10,24 @@ import (
 
 // Session holds the conversation state for one agent session.
 type Session struct {
-	ID         string
-	Messages   []provider.Message
-	CreatedAt  time.Time
-	TokensUsed int
+	ID               string
+	Messages         []provider.Message
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	TokensUsed       int    // cumulative total tokens (never reset)
+	PromptTokens     int    // last API call's input tokens (for threshold checks)
+	CompletionTokens int    // last API call's output tokens
+	Summary          string // compaction summary (empty = not yet compacted)
 }
 
 // New creates a new session with a unique ID.
 func New() *Session {
+	now := time.Now()
 	return &Session{
 		ID:        newID(),
 		Messages:  nil,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 }
 

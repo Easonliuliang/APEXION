@@ -8,6 +8,10 @@ import (
 	"syscall"
 
 	"github.com/aictl/aictl/internal/agent"
+	"github.com/aictl/aictl/internal/config"
+	"github.com/aictl/aictl/internal/permission"
+	"github.com/aictl/aictl/internal/provider"
+	"github.com/aictl/aictl/internal/session"
 	"github.com/aictl/aictl/internal/tools"
 	"github.com/aictl/aictl/internal/tui"
 )
@@ -27,13 +31,46 @@ func runChat() error {
 	}
 
 	registry := tools.DefaultRegistry()
-	isAutoApprove := cfg.Permissions.Mode == "auto-approve"
-	executor := tools.NewExecutor(registry, isAutoApprove, cfg.Permissions.AutoApproveTools)
+	policy := permission.NewDefaultPolicy(&cfg.Permissions)
+	executor := tools.NewExecutor(registry, policy)
+
+	dbPath, err := session.DefaultDBPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "session db path:", err)
+		os.Exit(1)
+	}
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open session store:", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	// Provider factory for /provider hot-swap.
+	factory := agent.ProviderFactory(func(c *config.Config) (provider.Provider, error) {
+		return buildProvider(c)
+	})
 
 	if useTUI {
-		return tui.RunTUI(func(ui tui.IO) error {
+		// Build a temporary session to get the ID for the welcome page.
+		sess := session.New()
+		sessionID := sess.ID
+		if len(sessionID) > 8 {
+			sessionID = sessionID[:8]
+		}
+
+		tuiCfg := tui.TUIConfig{
+			Version:     appVersion,
+			Provider:    cfg.Provider,
+			Model:       cfg.Model,
+			SessionID:   sessionID,
+			ShowWelcome: true,
+		}
+
+		return tui.RunTUI(tuiCfg, func(ui tui.IO) error {
 			executor.SetConfirmer(ui)
-			a := agent.New(p, executor, cfg, ui)
+			a := agent.NewWithSession(p, executor, cfg, ui, store, sess)
+			a.SetProviderFactory(factory)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -53,7 +90,8 @@ func runChat() error {
 	ui := tui.NewPlainIO()
 	executor.SetConfirmer(ui)
 
-	a := agent.New(p, executor, cfg, ui)
+	a := agent.New(p, executor, cfg, ui, store)
+	a.SetProviderFactory(factory)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

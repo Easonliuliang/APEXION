@@ -20,45 +20,101 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 		maxIter = 25
 	}
 
+	// Compute token budget.
+	contextWindow := a.config.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = a.provider.ContextWindow()
+	}
+	budget := session.NewTokenBudget(contextWindow, estimateTokens(a.systemPrompt))
+
 	for iteration := range maxIter {
-		a.session.Messages = session.TrimHistory(a.session.Messages, 128000)
+		// Auto-compact if summarizer is available and threshold exceeded.
+		if a.shouldCompact(budget) && a.summarizer != nil {
+			summary, err := a.summarizer.Summarize(ctx, a.session.Summary, a.session.Messages)
+			if err == nil {
+				a.session.Summary = summary
+				a.session.Messages = session.TruncateSession(a.session.Messages, 10)
+				a.io.SystemMessage("Context compacted.")
+			}
+		}
+
+		// Generate compacted copy for sending (does not modify session).
+		compacted := session.CompactHistory(a.session.Messages, budget.HistoryMax, a.session.Summary)
 
 		req := &provider.ChatRequest{
 			Model:        a.config.Model,
-			Messages:     a.session.Messages,
+			Messages:     compacted,
 			Tools:        a.buildToolSchemas(),
 			SystemPrompt: a.systemPrompt,
 			MaxTokens:    8192,
 		}
 
-		events, err := a.provider.Chat(ctx, req)
-		if err != nil {
-			return fmt.Errorf("LLM call failed: %w", err)
-		}
-
 		var textContent strings.Builder
 		var toolCalls []*provider.ToolCallRequest
+		var streamErr error
 
-		a.io.ThinkingStart()
+		// Retry loop for transient API errors.
+		for attempt := range maxRetries + 1 {
+			textContent.Reset()
+			toolCalls = nil
+			streamErr = nil
 
-		for event := range events {
-			switch event.Type {
-			case provider.EventTextDelta:
-				a.io.TextDelta(event.TextDelta)
-				textContent.WriteString(event.TextDelta)
-
-			case provider.EventToolCallDone:
-				toolCalls = append(toolCalls, event.ToolCall)
-
-			case provider.EventDone:
-				if event.Usage != nil {
-					a.session.TokensUsed += event.Usage.InputTokens + event.Usage.OutputTokens
-					a.io.SetTokens(a.session.TokensUsed)
+			events, err := a.provider.Chat(ctx, req)
+			if err != nil {
+				if attempt < maxRetries && isRetryableError(err) {
+					delay := retryDelay(attempt)
+					a.io.SystemMessage(formatRetryMessage(attempt, maxRetries, delay, err))
+					if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+						return sleepErr
+					}
+					continue
 				}
-
-			case provider.EventError:
-				return fmt.Errorf("stream error: %w", event.Error)
+				return fmt.Errorf("LLM call failed: %w", err)
 			}
+
+			a.io.ThinkingStart()
+
+			receivedContent := false
+			for event := range events {
+				switch event.Type {
+				case provider.EventTextDelta:
+					receivedContent = true
+					a.io.TextDelta(event.TextDelta)
+					textContent.WriteString(event.TextDelta)
+
+				case provider.EventToolCallDone:
+					receivedContent = true
+					toolCalls = append(toolCalls, event.ToolCall)
+
+				case provider.EventDone:
+					if event.Usage != nil {
+						a.session.PromptTokens = event.Usage.InputTokens
+						a.session.CompletionTokens = event.Usage.OutputTokens
+						a.session.TokensUsed += event.Usage.InputTokens + event.Usage.OutputTokens
+						a.io.SetTokens(a.session.TokensUsed)
+					}
+
+				case provider.EventError:
+					streamErr = event.Error
+				}
+			}
+
+			// If stream error occurred before any content, retry if possible.
+			if streamErr != nil && !receivedContent && attempt < maxRetries && isRetryableError(streamErr) {
+				delay := retryDelay(attempt)
+				a.io.SystemMessage(formatRetryMessage(attempt, maxRetries, delay, streamErr))
+				if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+					return sleepErr
+				}
+				continue
+			}
+
+			// Stream error after content was received — can't retry safely.
+			if streamErr != nil {
+				return fmt.Errorf("stream error: %w", streamErr)
+			}
+
+			break // success
 		}
 
 		full := textContent.String()
@@ -129,6 +185,22 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 	}
 
 	return results
+}
+
+// shouldCompact returns true when the context is large enough to warrant compaction.
+func (a *Agent) shouldCompact(budget *session.TokenBudget) bool {
+	// Use actual API-reported prompt tokens if available.
+	if a.session.PromptTokens > 0 {
+		return a.session.PromptTokens >= budget.CompactThreshold()
+	}
+	// Fallback to estimation.
+	estimated := a.session.EstimateTokens() + estimateTokens(a.systemPrompt)
+	return estimated >= budget.CompactThreshold()
+}
+
+// estimateTokens returns a rough token estimate for a string (chars / 4).
+func estimateTokens(s string) int {
+	return len(s) / 4
 }
 
 // buildToolSchemas converts the executor's registry tools into provider.ToolSchema.

@@ -7,6 +7,7 @@ import (
 	"github.com/aictl/aictl/internal/config"
 	"github.com/aictl/aictl/internal/provider"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -14,16 +15,31 @@ var (
 	autoApprove  bool
 	modelFlag    string
 	providerFlag string
-	useTUI       bool
+	useTUI bool
+
+	// Package-level version info, set by Execute().
+	appVersion string
+	appCommit  string
+	appDate    string
 )
 
 // Execute is the main entry point called from main.go.
 func Execute(version, commit, date string) {
+	appVersion = version
+	appCommit = commit
+	appDate = date
+
 	rootCmd := &cobra.Command{
 		Use:   "aictl",
 		Short: "AI-powered coding assistant",
 		Long:  "aictl is an interactive AI coding agent with tool execution capabilities.",
 		// Running aictl with no subcommand starts chat mode.
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Default TUI on when stdout is a terminal and --tui was not explicitly set.
+			if !cmd.Root().PersistentFlags().Changed("tui") && term.IsTerminal(int(os.Stdout.Fd())) {
+				useTUI = true
+			}
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runChat()
 		},
@@ -36,7 +52,7 @@ func Execute(version, commit, date string) {
 	rootCmd.PersistentFlags().BoolVar(&autoApprove, "auto-approve", false, "skip all tool execution confirmations")
 	rootCmd.PersistentFlags().StringVarP(&modelFlag, "model", "m", "", "override model")
 	rootCmd.PersistentFlags().StringVarP(&providerFlag, "provider", "p", "", "override provider")
-	rootCmd.PersistentFlags().BoolVar(&useTUI, "tui", false, "use bubbletea TUI mode")
+	rootCmd.PersistentFlags().BoolVar(&useTUI, "tui", false, "use bubbletea TUI mode (default: auto-detect terminal)")
 
 	// Subcommands
 	rootCmd.AddCommand(newRunCmd())

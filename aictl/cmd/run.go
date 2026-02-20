@@ -8,6 +8,8 @@ import (
 	"syscall"
 
 	"github.com/aictl/aictl/internal/agent"
+	"github.com/aictl/aictl/internal/permission"
+	"github.com/aictl/aictl/internal/session"
 	"github.com/aictl/aictl/internal/tools"
 	"github.com/aictl/aictl/internal/tui"
 	"github.com/spf13/cobra"
@@ -50,13 +52,32 @@ func runOnce(prompt string) error {
 	}
 
 	registry := tools.DefaultRegistry()
-	isAutoApprove := cfg.Permissions.Mode == "auto-approve"
-	executor := tools.NewExecutor(registry, isAutoApprove, cfg.Permissions.AutoApproveTools)
+	policy := permission.NewDefaultPolicy(&cfg.Permissions)
+	executor := tools.NewExecutor(registry, policy)
+
+	dbPath, err := session.DefaultDBPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "session db path:", err)
+		os.Exit(1)
+	}
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open session store:", err)
+		os.Exit(1)
+	}
+	defer store.Close()
 
 	if useTUI {
-		return tui.RunTUI(func(ui tui.IO) error {
+		tuiCfg := tui.TUIConfig{
+			Version:     appVersion,
+			Provider:    cfg.Provider,
+			Model:       cfg.Model,
+			ShowWelcome: false, // run mode: no welcome page
+		}
+
+		return tui.RunTUI(tuiCfg, func(ui tui.IO) error {
 			executor.SetConfirmer(ui)
-			a := agent.New(p, executor, cfg, ui)
+			a := agent.New(p, executor, cfg, ui, store)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -76,7 +97,7 @@ func runOnce(prompt string) error {
 	ui := tui.NewPlainIO()
 	executor.SetConfirmer(ui)
 
-	a := agent.New(p, executor, cfg, ui)
+	a := agent.New(p, executor, cfg, ui, store)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

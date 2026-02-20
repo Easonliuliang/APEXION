@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/aictl/aictl/internal/permission"
 )
 
 // Confirmer is a minimal interface the Executor uses for permission prompts.
@@ -17,24 +19,16 @@ type Confirmer interface {
 type Executor struct {
 	registry       *Registry
 	confirmer      Confirmer
+	policy         permission.Policy
 	defaultTimeout time.Duration
-	maxOutputBytes int
-	autoApprove    bool
-	autoApproveSet map[string]bool
 }
 
 // NewExecutor 创建工具执行器
-func NewExecutor(registry *Registry, autoApprove bool, autoApproveTools []string) *Executor {
-	approveSet := make(map[string]bool, len(autoApproveTools))
-	for _, name := range autoApproveTools {
-		approveSet[name] = true
-	}
+func NewExecutor(registry *Registry, policy permission.Policy) *Executor {
 	return &Executor{
 		registry:       registry,
+		policy:         policy,
 		defaultTimeout: 30 * time.Second,
-		maxOutputBytes: 100 * 1024,
-		autoApprove:    autoApprove,
-		autoApproveSet: approveSet,
 	}
 }
 
@@ -56,13 +50,19 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		return ToolResult{Content: fmt.Sprintf("unknown tool: %s", name), IsError: true}
 	}
 
-	// 权限检查
-	if !tool.IsReadOnly() && !e.autoApprove && !e.autoApproveSet[name] {
+	// Permission check via policy.
+	decision := e.policy.Check(name, params)
+	switch decision {
+	case permission.Deny:
+		return ToolResult{Content: "tool execution denied by policy", IsError: true}
+	case permission.NeedConfirmation:
 		if e.confirmer != nil {
 			if !e.confirmer.Confirm(name, string(params), tool.PermissionLevel()) {
 				return ToolResult{Content: "tool execution cancelled by user", IsError: true}
 			}
 		}
+	case permission.Allow:
+		// proceed
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, e.defaultTimeout)
@@ -73,10 +73,35 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		return ToolResult{Content: fmt.Sprintf("error: %v", err), IsError: true}
 	}
 
-	if len(result.Content) > e.maxOutputBytes {
-		result.Content = result.Content[:e.maxOutputBytes] + "\n[Truncated: output too large]"
+	limit := toolOutputLimit(name)
+	if len(result.Content) > limit {
+		result.Content = truncateHeadTail(result.Content, limit)
 		result.Truncated = true
 	}
 
 	return result
+}
+
+// toolOutputLimit returns the output byte limit for a given tool.
+func toolOutputLimit(name string) int {
+	switch name {
+	case "read_file", "grep", "bash":
+		return 32 * 1024 // 32KB ~8K tokens
+	case "git_diff", "git_status", "list_dir", "glob":
+		return 16 * 1024 // 16KB
+	default: // edit_file, write_file, git_commit, git_push, etc.
+		return 4 * 1024 // 4KB
+	}
+}
+
+// truncateHeadTail keeps the head (60%) and tail (40%) of a string,
+// omitting the middle. Tail content (errors, final results) is often more important.
+func truncateHeadTail(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	head := maxLen * 3 / 5 // 60%
+	tail := maxLen * 2 / 5 // 40%
+	omitted := len(s) - head - tail
+	return s[:head] + fmt.Sprintf("\n\n[...%d chars omitted...]\n\n", omitted) + s[len(s)-tail:]
 }

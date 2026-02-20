@@ -19,9 +19,10 @@ const (
 
 // ToolResult 是工具执行的结果
 type ToolResult struct {
-	Content   string // 主要输出内容
-	IsError   bool   // 是否为错误结果
-	Truncated bool   // 内容是否被截断
+	Content       string // 主要输出内容
+	IsError       bool   // 是否为错误结果
+	Truncated     bool   // 内容是否被截断
+	UserCancelled bool   // 用户主动中断（Esc），应停止 agent loop
 }
 
 // Tool 是所有可被 LLM 调用的工具的统一接口

@@ -53,8 +53,14 @@ func (r *Registry) ToSchemas() []map[string]any {
 	return schemas
 }
 
+// WebToolsConfig holds configuration for web-related tools.
+type WebToolsConfig struct {
+	SearchProvider string // "tavily" or "jina"
+	SearchAPIKey   string
+}
+
 // DefaultRegistry 创建包含所有内置工具的注册表
-func DefaultRegistry() *Registry {
+func DefaultRegistry(webCfg *WebToolsConfig) *Registry {
 	r := NewRegistry()
 	r.Register(&ReadFileTool{})
 	r.Register(&EditFileTool{})
@@ -67,5 +73,13 @@ func DefaultRegistry() *Registry {
 	r.Register(&GitDiffTool{})
 	r.Register(&GitCommitTool{})
 	r.Register(&GitPushTool{})
+	r.Register(&TodoWriteTool{})
+	r.Register(&TodoReadTool{})
+	r.Register(&WebFetchTool{})
+	if webCfg != nil {
+		r.Register(NewWebSearchTool(webCfg.SearchProvider, webCfg.SearchAPIKey))
+	} else {
+		r.Register(NewWebSearchTool("", ""))
+	}
 	return r
 }

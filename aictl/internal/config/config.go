@@ -39,6 +39,15 @@ type PermissionConfig struct {
 	DeniedCommands []string `yaml:"denied_commands"`
 }
 
+// WebConfig holds settings for web tools (web_fetch, web_search).
+type WebConfig struct {
+	// SearchProvider: "tavily" | "exa" | "jina" (free fallback, no key needed)
+	SearchProvider string `yaml:"search_provider"`
+
+	// SearchAPIKey: API key for the search provider (required for Tavily)
+	SearchAPIKey string `yaml:"search_api_key"`
+}
+
 // Config 是 aictl 的完整配置结构
 type Config struct {
 	// Provider 当前使用的 provider 名称（如 "deepseek", "anthropic", "openai"）
@@ -52,6 +61,9 @@ type Config struct {
 
 	// Permissions 权限系统配置
 	Permissions PermissionConfig `yaml:"permissions"`
+
+	// Web holds settings for web tools (web_fetch, web_search)
+	Web WebConfig `yaml:"web"`
 
 	// SystemPrompt 自定义 system prompt（空则使用默认）
 	SystemPrompt string `yaml:"system_prompt"`
@@ -74,6 +86,7 @@ func DefaultConfig() *Config {
 			Mode: "interactive",
 			AutoApproveTools: []string{
 				"read_file", "glob", "grep", "list_dir",
+				"web_fetch", "web_search",
 			},
 		},
 	}
@@ -152,5 +165,19 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AICTL_MODEL"); v != "" {
 		cfg.Model = v
+	}
+
+	// Web search
+	if v := os.Getenv("TAVILY_API_KEY"); v != "" && cfg.Web.SearchAPIKey == "" {
+		cfg.Web.SearchAPIKey = v
+		if cfg.Web.SearchProvider == "" {
+			cfg.Web.SearchProvider = "tavily"
+		}
+	}
+	if v := os.Getenv("EXA_API_KEY"); v != "" && cfg.Web.SearchAPIKey == "" {
+		cfg.Web.SearchAPIKey = v
+		if cfg.Web.SearchProvider == "" {
+			cfg.Web.SearchProvider = "exa"
+		}
 	}
 }

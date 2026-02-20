@@ -30,7 +30,10 @@ func runChat() error {
 		cfg.Model = p.DefaultModel()
 	}
 
-	registry := tools.DefaultRegistry()
+	registry := tools.DefaultRegistry(&tools.WebToolsConfig{
+		SearchProvider: cfg.Web.SearchProvider,
+		SearchAPIKey:   cfg.Web.SearchAPIKey,
+	})
 	policy := permission.NewDefaultPolicy(&cfg.Permissions)
 	executor := tools.NewExecutor(registry, policy)
 
@@ -69,6 +72,9 @@ func runChat() error {
 
 		return tui.RunTUI(tuiCfg, func(ui tui.IO) error {
 			executor.SetConfirmer(ui)
+			if tc, ok := ui.(tools.ToolCanceller); ok {
+				executor.SetToolCanceller(tc)
+			}
 			a := agent.NewWithSession(p, executor, cfg, ui, store, sess)
 			a.SetProviderFactory(factory)
 

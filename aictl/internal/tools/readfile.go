@@ -22,7 +22,7 @@ func (t *ReadFileTool) Description() string {
 
 func (t *ReadFileTool) Parameters() map[string]any {
 	return map[string]any{
-		"path": map[string]any{
+		"file_path": map[string]any{
 			"type":        "string",
 			"description": "Absolute path to the file to read",
 		},
@@ -39,21 +39,26 @@ func (t *ReadFileTool) Parameters() map[string]any {
 
 func (t *ReadFileTool) Execute(_ context.Context, params json.RawMessage) (ToolResult, error) {
 	var p struct {
-		Path   string `json:"path"`
-		Offset int    `json:"offset"`
-		Limit  int    `json:"limit"`
+		FilePath string `json:"file_path"`
+		Path     string `json:"path"`
+		Offset   int    `json:"offset"`
+		Limit    int    `json:"limit"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return ToolResult{}, fmt.Errorf("invalid params: %w", err)
 	}
-	if p.Path == "" {
-		return ToolResult{}, fmt.Errorf("path is required")
+	// Accept both "file_path" (primary) and "path" (compat).
+	if p.FilePath == "" && p.Path != "" {
+		p.FilePath = p.Path
+	}
+	if p.FilePath == "" {
+		return ToolResult{}, fmt.Errorf("file_path is required")
 	}
 	if p.Limit <= 0 {
 		p.Limit = 2000
 	}
 
-	data, err := os.ReadFile(p.Path)
+	data, err := os.ReadFile(p.FilePath)
 	if err != nil {
 		return ToolResult{}, fmt.Errorf("failed to read file: %w", err)
 	}

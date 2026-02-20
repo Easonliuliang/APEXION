@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"io"
+	"sync"
 
 	"github.com/aictl/aictl/internal/tools"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,6 +14,10 @@ import (
 type TuiIO struct {
 	program *tea.Program
 	inputCh chan inputResult
+
+	mu         sync.Mutex
+	cancelTool context.CancelFunc
+	cancelLoop context.CancelFunc
 }
 
 var _ IO = (*TuiIO)(nil)
@@ -73,4 +79,62 @@ func (t *TuiIO) Error(msg string) {
 
 func (t *TuiIO) SetTokens(n int) {
 	t.program.Send(tokensMsg{n: n})
+}
+
+// --- ToolCanceller implementation ---
+
+// SetToolCancel registers the cancel function for the currently running tool.
+func (t *TuiIO) SetToolCancel(cancel context.CancelFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cancelTool = cancel
+}
+
+// ClearToolCancel clears the cancel function after the tool finishes.
+func (t *TuiIO) ClearToolCancel() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cancelTool = nil
+}
+
+// CancelRunningTool cancels the currently running tool. Returns true if a
+// tool was actually cancelled.
+func (t *TuiIO) CancelRunningTool() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cancelTool != nil {
+		t.cancelTool()
+		t.cancelTool = nil
+		return true
+	}
+	return false
+}
+
+// --- LoopCanceller implementation ---
+
+// SetLoopCancel registers the per-turn cancel function for the agent loop.
+func (t *TuiIO) SetLoopCancel(cancel context.CancelFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cancelLoop = cancel
+}
+
+// ClearLoopCancel clears the loop cancel function when the turn ends.
+func (t *TuiIO) ClearLoopCancel() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cancelLoop = nil
+}
+
+// CancelLoop cancels the entire agent loop (per-turn). Returns true if
+// the loop was actually cancelled.
+func (t *TuiIO) CancelLoop() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cancelLoop != nil {
+		t.cancelLoop()
+		t.cancelLoop = nil
+		return true
+	}
+	return false
 }

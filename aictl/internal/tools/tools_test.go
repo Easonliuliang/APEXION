@@ -14,10 +14,11 @@ import (
 // --- Registry tests ---
 
 func TestDefaultRegistry_AllToolsRegistered(t *testing.T) {
-	r := DefaultRegistry()
+	r := DefaultRegistry(nil)
 	expected := []string{
 		"bash", "edit_file", "git_commit", "git_diff", "git_push",
-		"git_status", "glob", "grep", "list_dir", "read_file", "write_file",
+		"git_status", "glob", "grep", "list_dir", "read_file",
+		"todo_read", "todo_write", "web_fetch", "web_search", "write_file",
 	}
 	all := r.All()
 	if len(all) != len(expected) {
@@ -296,7 +297,7 @@ func TestExecutor_UnknownTool(t *testing.T) {
 }
 
 func TestExecutor_PolicyDeny(t *testing.T) {
-	r := DefaultRegistry()
+	r := DefaultRegistry(nil)
 	e := NewExecutor(r, &denyAllPolicy{})
 
 	params, _ := json.Marshal(map[string]any{"command": "echo hi"})
@@ -314,7 +315,7 @@ func TestExecutor_ReadFile(t *testing.T) {
 	path := filepath.Join(tmp, "test.txt")
 	os.WriteFile(path, []byte("content here\n"), 0644)
 
-	r := DefaultRegistry()
+	r := DefaultRegistry(nil)
 	e := NewExecutor(r, &allowAllPolicy{})
 
 	params, _ := json.Marshal(map[string]any{"path": path})
@@ -337,6 +338,8 @@ func TestToolOutputLimit(t *testing.T) {
 		{"read_file", 32 * 1024},
 		{"grep", 32 * 1024},
 		{"bash", 32 * 1024},
+		{"web_fetch", 32 * 1024},
+		{"web_search", 32 * 1024},
 		{"git_diff", 16 * 1024},
 		{"glob", 16 * 1024},
 		{"list_dir", 16 * 1024},

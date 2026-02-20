@@ -17,8 +17,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Permissions.Mode != "interactive" {
 		t.Errorf("expected default permission mode 'interactive', got %q", cfg.Permissions.Mode)
 	}
-	if len(cfg.Permissions.AutoApproveTools) != 4 {
-		t.Errorf("expected 4 auto-approve tools, got %d", len(cfg.Permissions.AutoApproveTools))
+	if len(cfg.Permissions.AutoApproveTools) != 6 {
+		t.Errorf("expected 6 auto-approve tools, got %d", len(cfg.Permissions.AutoApproveTools))
 	}
 	if cfg.ContextWindow != 0 {
 		t.Errorf("expected default context_window 0, got %d", cfg.ContextWindow)

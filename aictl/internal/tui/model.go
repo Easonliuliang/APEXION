@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aictl/aictl/internal/tools"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -41,6 +42,7 @@ type systemMsg struct{ text string }
 type errorMsg struct{ text string }
 type tokensMsg struct{ n int }
 type agentDoneMsg struct{ err error }
+type toolTickMsg struct{}
 
 // ---------- spinner activity kinds ----------
 
@@ -198,8 +200,12 @@ type Model struct {
 	quitting bool
 
 	// status bar
-	tokens   int
-	toolName string // current tool being executed (empty = none)
+	tokens        int
+	toolName      string    // current tool being executed (empty = none)
+	toolStartTime time.Time // when the current tool started
+
+	cancelToolFn func() bool // injected from TuiIO to cancel running tool
+	cancelLoopFn func() bool // injected from TuiIO to cancel entire agent loop
 
 	cfg     TUIConfig // version/provider info
 	program *tea.Program
@@ -235,6 +241,10 @@ func NewModel(inputCh chan inputResult, cfg TUIConfig) Model {
 	}
 
 	return m
+}
+
+func toolTickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return toolTickMsg{} })
 }
 
 func (m Model) Init() tea.Cmd {
@@ -301,7 +311,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirming = false
 				m.confirmCh = nil
 				m.appendLine(systemStyle.Render("  [cancelled]"))
-			} else if m.inputMode {
+				return m, nil
+			}
+			if m.inputMode {
 				m.inputCh <- inputResult{err: fmt.Errorf("interrupted")}
 				m.inputMode = false
 				m.textinput.Blur()
@@ -325,11 +337,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "esc":
+			// Esc = "stop everything, give me back control"
+			// Works in all agent states, matching Claude Code behavior.
 			if m.confirming && m.confirmCh != nil {
+				// During confirmation: deny and stop the loop.
 				m.confirmCh <- false
 				m.confirming = false
 				m.confirmCh = nil
 				m.appendLine(toolErrorStyle.Render("  ✗ denied"))
+				return m, nil
+			}
+			if m.toolName != "" && m.cancelToolFn != nil {
+				// During tool execution: cancel the tool.
+				// The executor will set UserCancelled=true,
+				// which causes the loop to stop.
+				m.cancelToolFn()
+				return m, nil
+			}
+			if (m.spinnerKind == spinnerThinking || m.streaming) && m.cancelLoopFn != nil {
+				// During LLM streaming/thinking: cancel the loop context.
+				// This aborts the stream and returns to user input.
+				m.cancelLoopFn()
+				m.spinnerKind = spinnerNone
+				m.streaming = false
 				return m, nil
 			}
 
@@ -396,14 +426,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.streaming = false
 
+	case toolTickMsg:
+		if m.toolName != "" {
+			wasAtBottom := m.viewport.AtBottom()
+			m.viewport.SetContent(m.renderContent())
+			if wasAtBottom {
+				m.viewport.GotoBottom()
+			}
+			cmds = append(cmds, toolTickCmd())
+		}
+		return m, tea.Batch(cmds...)
+
 	case toolStartMsg:
 		m.toolName = msg.name
+		m.toolStartTime = time.Now()
 		m.spinnerKind = spinnerTool
 		m.currentToolConfirmed = false
 		m.currentTool = &toolCallState{
 			name:   msg.name,
 			params: formatToolParams(msg.params),
 		}
+		cmds = append(cmds, toolTickCmd())
 
 	case toolDoneMsg:
 		if m.currentTool != nil {
@@ -419,6 +462,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.toolName = ""
+		m.toolStartTime = time.Time{}
 		m.spinnerKind = spinnerNone
 		m.currentTool = nil
 
@@ -475,7 +519,8 @@ func (m Model) View() string {
 	}
 	status := statusModelStyle.Render(" "+modelName) + statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
 	if m.toolName != "" {
-		status += statusBarStyle.Render(fmt.Sprintf(" │ tool: %s", m.toolName))
+		elapsed := int(time.Since(m.toolStartTime).Seconds())
+		status += statusBarStyle.Render(fmt.Sprintf(" │ tool: %s (%ds)", m.toolName, elapsed))
 	}
 	bar := separatorStyle.Width(m.width).Render(strings.Repeat("─", m.width)) + "\n" +
 		statusBarBgStyle.Width(m.width).Render(status)
@@ -514,19 +559,19 @@ func (m Model) View() string {
 
 // ---------- tool call rendering ----------
 
-// renderToolRunning renders an in-flight tool call block with spinner.
+// renderToolRunning renders an in-flight tool call block with spinner (2 lines).
 func (m *Model) renderToolRunning(tc *toolCallState) string {
 	name := toolNameStyle.Render(tc.name)
 	params := toolParamStyle.Render(tc.params)
-	status := m.spinner.View() + " running..."
-	inner := name + "\n" + params + "\n" + status
+	elapsed := int(time.Since(m.toolStartTime).Seconds())
+	status := fmt.Sprintf("%s running... (%ds)  esc to cancel", m.spinner.View(), elapsed)
+	inner := name + "  " + params + "\n" + status
 	return toolBorderStyle.Render(inner)
 }
 
-// renderToolDone renders a completed tool call block.
+// renderToolDone renders a completed tool call block (single line).
 func (m *Model) renderToolDone(tc *toolCallState, result string, isErr bool) string {
 	name := toolNameStyle.Render(tc.name)
-	params := toolParamStyle.Render(tc.params)
 	var status string
 	if isErr {
 		status = toolErrorStyle.Render("✗ " + truncateStr(result, 200))
@@ -534,7 +579,7 @@ func (m *Model) renderToolDone(tc *toolCallState, result string, isErr bool) str
 		summary := truncateStr(strings.ReplaceAll(result, "\n", " "), 120)
 		status = toolSuccessStyle.Render("✓ " + summary)
 	}
-	inner := name + "\n" + params + "\n" + status
+	inner := name + "  " + status
 	return toolBorderStyle.Render(inner)
 }
 

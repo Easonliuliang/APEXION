@@ -7,6 +7,7 @@ import (
 
 	"github.com/aictl/aictl/internal/provider"
 	"github.com/aictl/aictl/internal/session"
+	"github.com/aictl/aictl/internal/tools"
 )
 
 // runAgentLoop executes the core agentic loop:
@@ -14,10 +15,23 @@ import (
 //  2. Collect text deltas (stream to UI) and tool calls
 //  3. If tool calls exist, execute them, append results to history, and loop
 //  4. If no tool calls, return (wait for next user input)
+//
+// A per-turn child context is created so that Esc can cancel the entire turn
+// (including LLM streaming) without affecting the session-level context.
 func (a *Agent) runAgentLoop(ctx context.Context) error {
 	maxIter := a.config.MaxIterations
 	if maxIter <= 0 {
 		maxIter = 25
+	}
+
+	// Per-turn context: Esc cancels this, not the session.
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	defer turnCancel()
+
+	// Register the turn cancel with the UI so Esc can trigger it.
+	if lc, ok := a.io.(tools.LoopCanceller); ok {
+		lc.SetLoopCancel(turnCancel)
+		defer lc.ClearLoopCancel()
 	}
 
 	// Compute token budget.
@@ -28,9 +42,15 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 	budget := session.NewTokenBudget(contextWindow, estimateTokens(a.systemPrompt))
 
 	for iteration := range maxIter {
+		// Check if the turn was cancelled before starting an iteration.
+		if turnCtx.Err() != nil {
+			a.io.SystemMessage("Interrupted.")
+			return nil
+		}
+
 		// Auto-compact if summarizer is available and threshold exceeded.
 		if a.shouldCompact(budget) && a.summarizer != nil {
-			summary, err := a.summarizer.Summarize(ctx, a.session.Summary, a.session.Messages)
+			summary, err := a.summarizer.Summarize(turnCtx, a.session.Summary, a.session.Messages)
 			if err == nil {
 				a.session.Summary = summary
 				a.session.Messages = session.TruncateSession(a.session.Messages, 10)
@@ -59,13 +79,19 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 			toolCalls = nil
 			streamErr = nil
 
-			events, err := a.provider.Chat(ctx, req)
+			events, err := a.provider.Chat(turnCtx, req)
 			if err != nil {
+				// If cancelled by user Esc, exit gracefully.
+				if turnCtx.Err() != nil {
+					a.io.SystemMessage("Interrupted.")
+					return nil
+				}
 				if attempt < maxRetries && isRetryableError(err) {
 					delay := retryDelay(attempt)
 					a.io.SystemMessage(formatRetryMessage(attempt, maxRetries, delay, err))
-					if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
-						return sleepErr
+					if sleepErr := sleepWithContext(turnCtx, delay); sleepErr != nil {
+						a.io.SystemMessage("Interrupted.")
+						return nil
 					}
 					continue
 				}
@@ -76,6 +102,10 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 
 			receivedContent := false
 			for event := range events {
+				// Check for user cancellation mid-stream.
+				if turnCtx.Err() != nil {
+					break
+				}
 				switch event.Type {
 				case provider.EventTextDelta:
 					receivedContent = true
@@ -99,12 +129,24 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 				}
 			}
 
+			// If user cancelled during streaming, exit gracefully.
+			if turnCtx.Err() != nil {
+				full := textContent.String()
+				a.io.TextDone(full)
+				if full != "" {
+					a.session.AddMessage(buildAssistantMessage(full, nil))
+				}
+				a.io.SystemMessage("Interrupted.")
+				return nil
+			}
+
 			// If stream error occurred before any content, retry if possible.
 			if streamErr != nil && !receivedContent && attempt < maxRetries && isRetryableError(streamErr) {
 				delay := retryDelay(attempt)
 				a.io.SystemMessage(formatRetryMessage(attempt, maxRetries, delay, streamErr))
-				if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
-					return sleepErr
+				if sleepErr := sleepWithContext(turnCtx, delay); sleepErr != nil {
+					a.io.SystemMessage("Interrupted.")
+					return nil
 				}
 				continue
 			}
@@ -133,11 +175,19 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 			return nil
 		}
 
-		toolResults := a.executeToolCalls(ctx, toolCalls)
+		toolResults, interrupted := a.executeToolCalls(turnCtx, toolCalls)
 		a.session.AddMessage(provider.Message{
 			Role:    provider.RoleUser,
 			Content: toolResults,
 		})
+
+		// If user interrupted during tool execution, stop the loop
+		// and return to user input. The partial results are already
+		// in the message history for context continuity.
+		if interrupted {
+			a.io.SystemMessage("Interrupted.")
+			return nil
+		}
 	}
 	return nil
 }
@@ -166,7 +216,9 @@ func buildAssistantMessage(text string, toolCalls []*provider.ToolCallRequest) p
 }
 
 // executeToolCalls runs each tool call and returns tool_result content blocks.
-func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCallRequest) []provider.Content {
+// The second return value is true if the user interrupted (Esc) during execution,
+// signaling that the agent loop should stop.
+func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCallRequest) ([]provider.Content, bool) {
 	var results []provider.Content
 
 	for _, call := range calls {
@@ -182,9 +234,25 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 			ToolResult: result.Content,
 			IsError:    result.IsError,
 		})
+
+		// User pressed Esc — stop executing remaining tools immediately.
+		if result.UserCancelled {
+			// Fill in empty results for remaining tool calls so the
+			// message history stays structurally valid (every tool_use
+			// must have a corresponding tool_result).
+			for _, remaining := range calls[len(results):] {
+				results = append(results, provider.Content{
+					Type:       provider.ContentTypeToolResult,
+					ToolUseID:  remaining.ID,
+					ToolResult: "Interrupted",
+					IsError:    true,
+				})
+			}
+			return results, true
+		}
 	}
 
-	return results
+	return results, false
 }
 
 // shouldCompact returns true when the context is large enough to warrant compaction.

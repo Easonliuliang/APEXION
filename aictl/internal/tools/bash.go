@@ -20,6 +20,11 @@ func (t *BashTool) Description() string {
 	return "Execute a shell command and return its combined stdout and stderr output."
 }
 
+const (
+	defaultBashTimeout = 120 * time.Second
+	maxBashTimeout     = 600 * time.Second
+)
+
 func (t *BashTool) Parameters() map[string]any {
 	return map[string]any{
 		"command": map[string]any{
@@ -28,7 +33,7 @@ func (t *BashTool) Parameters() map[string]any {
 		},
 		"timeout": map[string]any{
 			"type":        "integer",
-			"description": "Timeout in seconds (default 30)",
+			"description": "Timeout in seconds (default 120, max 600)",
 		},
 	}
 }
@@ -45,9 +50,12 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (ToolRes
 		return ToolResult{}, fmt.Errorf("command is required")
 	}
 
-	timeout := 30 * time.Second
+	timeout := defaultBashTimeout
 	if p.Timeout > 0 {
 		timeout = time.Duration(p.Timeout) * time.Second
+	}
+	if timeout > maxBashTimeout {
+		timeout = maxBashTimeout
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -58,6 +66,16 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (ToolRes
 	result := string(out)
 
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			secs := int(timeout.Seconds())
+			return ToolResult{
+				Content: fmt.Sprintf("Command timed out after %dm %ds", secs/60, secs%60),
+				IsError: true,
+			}, nil
+		}
+		if ctx.Err() == context.Canceled {
+			return ToolResult{}, fmt.Errorf("cancelled")
+		}
 		return ToolResult{
 			Content: fmt.Sprintf("Exit error: %v\nOutput:\n%s", err, result),
 			IsError: true,

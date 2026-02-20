@@ -13,13 +13,16 @@ func RunTUI(cfg TUIConfig, agentFn func(io IO) error) error {
 	inputCh := make(chan inputResult, 1)
 	model := NewModel(inputCh, cfg)
 
-	p := tea.NewProgram(model, tea.WithAltScreen())
-	model.program = p
-
+	// Create TuiIO early so we can wire cancelToolFn before the model
+	// is copied into the tea.Program.
 	tuiIO := &TuiIO{
-		program: p,
 		inputCh: inputCh,
 	}
+	model.cancelToolFn = tuiIO.CancelRunningTool
+	model.cancelLoopFn = tuiIO.CancelLoop
+
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	tuiIO.program = p
 
 	var (
 		agentErr error

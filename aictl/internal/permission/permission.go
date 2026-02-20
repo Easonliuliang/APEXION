@@ -15,3 +15,11 @@ const (
 type Policy interface {
 	Check(toolName string, params json.RawMessage) Decision
 }
+
+// AllowAllPolicy allows all tool calls without confirmation.
+// Used by sub-agents that only have read-only tools.
+type AllowAllPolicy struct{}
+
+func (AllowAllPolicy) Check(_ string, _ json.RawMessage) Decision {
+	return Allow
+}

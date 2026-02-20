@@ -11,6 +11,15 @@ type Store interface {
 	Close() error
 }
 
+// NullStore is a no-op Store used by sub-agents that don't need persistence.
+type NullStore struct{}
+
+func (NullStore) Save(_ *Session) error          { return nil }
+func (NullStore) Load(_ string) (*Session, error) { return nil, nil }
+func (NullStore) List() ([]SessionInfo, error)    { return nil, nil }
+func (NullStore) Delete(_ string) error           { return nil }
+func (NullStore) Close() error                    { return nil }
+
 // SessionInfo is a lightweight summary of a saved session (for listing).
 type SessionInfo struct {
 	ID        string

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aictl/aictl/internal/config"
+	"github.com/aictl/aictl/internal/permission"
 	"github.com/aictl/aictl/internal/provider"
 	"github.com/aictl/aictl/internal/session"
 	"github.com/aictl/aictl/internal/tools"
@@ -93,6 +94,13 @@ todo_write / todo_read
 - Update the list (via todo_write) as you complete steps — mark items "completed" or "in_progress".
 - Use todo_read to review progress before continuing after a long sequence of tool calls.
 - Do NOT use for single-step tasks.
+
+task (sub-agent)
+- Use to delegate research, exploration, or search tasks to a sub-agent.
+- Sub-agents have read-only tools only (read_file, glob, grep, list_dir, web_fetch).
+- Give specific, focused prompts: "Find all files that import package X and list their paths."
+- Use multiple task calls in parallel when exploring different aspects of the codebase.
+- Do NOT use for tasks that need file modification — do those yourself.
 </tool_guidelines>
 
 <communication_style>
@@ -139,6 +147,17 @@ Verification policy (minimize unnecessary tool calls):
 - After write_file: trust the success message. Do NOT ls/cat/read_file to confirm.
 - After bash: read the output. Only re-run if the output suggests a problem.
 </anti_hallucination>`
+
+const subAgentSystemPrompt = `You are a research sub-agent. Your job is to explore and gather information, then return a clear summary.
+
+You have read-only tools: read_file, glob, grep, list_dir, web_fetch, todo_read.
+You CANNOT modify files, run commands, or make git changes.
+
+Rules:
+- Focus on the specific task given to you.
+- Use tools to gather evidence. Do not guess.
+- Return a concise, well-organized summary of your findings.
+- If you cannot find what was asked, say so clearly.`
 
 // ProviderFactory creates a Provider from a config. Used for /provider hot-swap.
 type ProviderFactory func(cfg *config.Config) (provider.Provider, error)
@@ -187,6 +206,7 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 		summarizer: &session.LLMSummarizer{Provider: p},
 	}
 	a.rebuildSystemPrompt()
+	a.wireTaskTool()
 	return a
 }
 
@@ -543,4 +563,43 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// wireTaskTool finds the TaskTool in the registry and injects the sub-agent runner.
+func (a *Agent) wireTaskTool() {
+	t, ok := a.executor.Registry().Get("task")
+	if !ok {
+		return
+	}
+	tt, ok := t.(*tools.TaskTool)
+	if !ok {
+		return
+	}
+	tt.SetRunner(a.runSubAgent)
+}
+
+// runSubAgent creates and runs an ephemeral read-only sub-agent.
+func (a *Agent) runSubAgent(ctx context.Context, prompt string) (string, error) {
+	buf := tui.NewBufferIO()
+
+	roRegistry := tools.ReadOnlyRegistry()
+	roExecutor := tools.NewExecutor(roRegistry, permission.AllowAllPolicy{})
+
+	subCfg := *a.config
+	subCfg.MaxIterations = 15
+	subCfg.SystemPrompt = subAgentSystemPrompt
+
+	sub := &Agent{
+		provider:   a.provider,
+		executor:   roExecutor,
+		config:     &subCfg,
+		session:    session.New(),
+		store:      session.NullStore{},
+		basePrompt: subAgentSystemPrompt,
+		io:         buf,
+	}
+	sub.rebuildSystemPrompt()
+
+	err := sub.RunOnce(ctx, prompt)
+	return buf.Output(), err
 }

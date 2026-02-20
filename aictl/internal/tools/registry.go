@@ -59,6 +59,19 @@ type WebToolsConfig struct {
 	SearchAPIKey   string
 }
 
+// ReadOnlyRegistry creates a registry with only read-only tools.
+// Used by sub-agents that should not modify files or run commands.
+func ReadOnlyRegistry() *Registry {
+	r := NewRegistry()
+	r.Register(&ReadFileTool{})
+	r.Register(&GlobTool{})
+	r.Register(&GrepTool{})
+	r.Register(&ListDirTool{})
+	r.Register(&WebFetchTool{})
+	r.Register(&TodoReadTool{})
+	return r
+}
+
 // DefaultRegistry 创建包含所有内置工具的注册表
 func DefaultRegistry(webCfg *WebToolsConfig) *Registry {
 	r := NewRegistry()
@@ -73,6 +86,7 @@ func DefaultRegistry(webCfg *WebToolsConfig) *Registry {
 	r.Register(&GitDiffTool{})
 	r.Register(&GitCommitTool{})
 	r.Register(&GitPushTool{})
+	r.Register(&TaskTool{})
 	r.Register(&TodoWriteTool{})
 	r.Register(&TodoReadTool{})
 	r.Register(&WebFetchTool{})

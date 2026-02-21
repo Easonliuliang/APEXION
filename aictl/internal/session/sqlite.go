@@ -160,6 +160,11 @@ func (s *SQLiteStore) Delete(id string) error {
 	return nil
 }
 
+// DB returns the underlying *sql.DB for sharing with other stores (e.g. MemoryStore).
+func (s *SQLiteStore) DB() *sql.DB {
+	return s.db
+}
+
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }

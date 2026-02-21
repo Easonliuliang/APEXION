@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/aictl/aictl/internal/config"
@@ -40,11 +42,13 @@ type Agent struct {
 	config          *config.Config
 	session         *session.Session
 	store           session.Store
+	memoryStore     session.MemoryStore
 	basePrompt      string // system prompt without identity suffix
 	systemPrompt    string
 	io              tui.IO
 	summarizer      session.Summarizer
 	providerFactory ProviderFactory
+	customCommands  map[string]*CustomCommand
 }
 
 // New creates a new Agent with the given IO implementation.
@@ -69,14 +73,15 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 	}
 
 	a := &Agent{
-		provider:   p,
-		executor:   exec,
-		config:     cfg,
-		session:    sess,
-		store:      store,
-		basePrompt: base,
-		io:         ui,
-		summarizer: &session.LLMSummarizer{Provider: p},
+		provider:       p,
+		executor:       exec,
+		config:         cfg,
+		session:        sess,
+		store:          store,
+		basePrompt:     base,
+		io:             ui,
+		summarizer:     &session.LLMSummarizer{Provider: p},
+		customCommands: loadCustomCommands(cwd),
 	}
 	a.rebuildSystemPrompt()
 	a.wireTaskTool()
@@ -88,8 +93,15 @@ func (a *Agent) SetProviderFactory(f ProviderFactory) {
 	a.providerFactory = f
 }
 
-// rebuildSystemPrompt appends a dynamic identity suffix to basePrompt.
-// Call after changing provider or model.
+// SetMemoryStore injects the cross-session memory store and rebuilds the system prompt
+// to include relevant memories.
+func (a *Agent) SetMemoryStore(ms session.MemoryStore) {
+	a.memoryStore = ms
+	a.rebuildSystemPrompt()
+}
+
+// rebuildSystemPrompt appends a dynamic identity suffix and persistent memories to basePrompt.
+// Call after changing provider, model, or memory store.
 func (a *Agent) rebuildSystemPrompt() {
 	model := a.config.Model
 	if model == "" {
@@ -99,6 +111,15 @@ func (a *Agent) rebuildSystemPrompt() {
 		"\n\nYou are powered by %s (provider: %s, model: %s). "+
 			"When asked about your identity, state these facts. Never claim to be a different model.",
 		a.config.Provider, a.config.Provider, model)
+
+	// Inject persistent memories if available.
+	if a.memoryStore != nil {
+		cwd, _ := os.Getwd()
+		projectTag := "project:" + filepath.Base(cwd)
+		if mem := a.memoryStore.LoadForPrompt(projectTag, 2048); mem != "" {
+			a.systemPrompt += "\n\n" + mem
+		}
+	}
 }
 
 // Run starts the interactive REPL loop.
@@ -211,7 +232,19 @@ func (a *Agent) handleSlashCommand(ctx context.Context, input string) (bool, boo
 		return a.handleResume(arg), false
 	case "/changes":
 		return a.handleChanges(), false
+	case "/trust":
+		return a.handleTrust(arg), false
+	case "/commands":
+		a.io.SystemMessage(formatCommandList(a.customCommands))
+		return true, false
+	case "/memory":
+		return a.handleMemory(arg), false
 	default:
+		// Check custom commands.
+		name := strings.TrimPrefix(cmd, "/")
+		if cc, ok := a.customCommands[name]; ok {
+			return a.handleCustomCommand(ctx, cc, arg), false
+		}
 		return false, false
 	}
 }
@@ -246,6 +279,28 @@ func (a *Agent) handleChanges() bool {
 	return true
 }
 
+func (a *Agent) handleTrust(arg string) bool {
+	dp, ok := a.executor.Policy().(*permission.DefaultPolicy)
+	if !ok {
+		a.io.SystemMessage("Approval memory not available (policy is not DefaultPolicy).")
+		return true
+	}
+
+	if arg == "reset" {
+		dp.ResetApprovals()
+		a.io.SystemMessage("Session approvals cleared.")
+		return true
+	}
+
+	summary := dp.Approvals()
+	if summary == "" {
+		a.io.SystemMessage("No session approvals recorded.\nApprovals are added when you confirm a tool call.")
+	} else {
+		a.io.SystemMessage(summary)
+	}
+	return true
+}
+
 func (a *Agent) handleHelp() bool {
 	help := `Available commands:
   /help              Show this help message
@@ -254,6 +309,13 @@ func (a *Agent) handleHelp() bool {
   /config            Show current configuration
   /compact           Manually trigger context compaction
   /changes           Show files modified in this session
+  /trust             Show session-level tool approvals
+  /trust reset       Clear all session approvals
+  /commands           List custom commands
+  /memory             List saved memories
+  /memory add <text>  Save a memory (add tags with #tag)
+  /memory search <q>  Search memories
+  /memory delete <id> Delete a memory
   /save              Save current session to disk
   /sessions          List saved sessions
   /resume <id>       Resume a saved session (use short ID prefix)
@@ -261,7 +323,169 @@ func (a *Agent) handleHelp() bool {
   /cost              Show token usage
   /clear             Clear message history
   /quit              Save and exit`
+
+	// Append custom commands if any.
+	if len(a.customCommands) > 0 {
+		help += "\n\nCustom commands:"
+		names := make([]string, 0, len(a.customCommands))
+		for name := range a.customCommands {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			desc := a.customCommands[name].Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			help += fmt.Sprintf("\n  /%-18s %s", name, desc)
+		}
+	}
+
 	a.io.SystemMessage(help)
+	return true
+}
+
+func (a *Agent) handleMemory(arg string) bool {
+	if a.memoryStore == nil {
+		a.io.SystemMessage("Memory store not configured.")
+		return true
+	}
+
+	// Parse subcommand.
+	parts := strings.SplitN(arg, " ", 2)
+	subcmd := ""
+	subarg := ""
+	if len(parts) > 0 {
+		subcmd = parts[0]
+	}
+	if len(parts) > 1 {
+		subarg = strings.TrimSpace(parts[1])
+	}
+
+	switch subcmd {
+	case "add":
+		if subarg == "" {
+			a.io.Error("Usage: /memory add <text> (use #tag to add tags)")
+			return true
+		}
+		content, tags := parseMemoryInput(subarg)
+		m, err := a.memoryStore.Add(content, tags, "manual", a.session.ID)
+		if err != nil {
+			a.io.Error("Failed to save memory: " + err.Error())
+			return true
+		}
+		a.io.SystemMessage(fmt.Sprintf("Memory saved [%s]: %s", m.ID, truncate(content, 100)))
+		// Rebuild prompt to include new memory.
+		a.rebuildSystemPrompt()
+
+	case "search":
+		if subarg == "" {
+			a.io.Error("Usage: /memory search <query>")
+			return true
+		}
+		memories, err := a.memoryStore.Search(subarg, 10)
+		if err != nil {
+			a.io.Error("Search failed: " + err.Error())
+			return true
+		}
+		a.io.SystemMessage(formatMemories(memories, "Search results"))
+
+	case "delete", "rm":
+		if subarg == "" {
+			a.io.Error("Usage: /memory delete <id>")
+			return true
+		}
+		if err := a.memoryStore.Delete(subarg); err != nil {
+			a.io.Error("Delete failed: " + err.Error())
+			return true
+		}
+		a.io.SystemMessage(fmt.Sprintf("Memory %s deleted.", subarg))
+		a.rebuildSystemPrompt()
+
+	default:
+		// List all memories.
+		memories, err := a.memoryStore.List(20)
+		if err != nil {
+			a.io.Error("Failed to list memories: " + err.Error())
+			return true
+		}
+		a.io.SystemMessage(formatMemories(memories, "Memories"))
+	}
+
+	return true
+}
+
+// parseMemoryInput extracts content and #tags from user input.
+// e.g. "prefer snake_case #preference #style" → ("prefer snake_case", ["preference", "style"])
+func parseMemoryInput(input string) (string, []string) {
+	words := strings.Fields(input)
+	var content []string
+	var tags []string
+
+	for _, w := range words {
+		if strings.HasPrefix(w, "#") && len(w) > 1 {
+			tags = append(tags, w[1:])
+		} else {
+			content = append(content, w)
+		}
+	}
+
+	return strings.Join(content, " "), tags
+}
+
+// formatMemories formats a list of memories for display.
+func formatMemories(memories []session.Memory, title string) string {
+	if len(memories) == 0 {
+		return "No memories found.\nUse /memory add <text> #tag to save one."
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s (%d):\n", title, len(memories)))
+	for _, m := range memories {
+		tags := ""
+		if len(m.Tags) > 0 {
+			tags = " [" + strings.Join(m.Tags, ", ") + "]"
+		}
+		sb.WriteString(fmt.Sprintf("  %s  %s  %s%s\n",
+			m.ID,
+			m.CreatedAt.Format("2006-01-02"),
+			truncate(m.Content, 60),
+			tags,
+		))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// handleCustomCommand renders a custom command template and sends it as user input to the LLM.
+func (a *Agent) handleCustomCommand(ctx context.Context, cmd *CustomCommand, rawArgs string) bool {
+	// Check required args.
+	for _, arg := range cmd.Args {
+		if arg.Required && rawArgs == "" {
+			a.io.Error(fmt.Sprintf("Usage: /%s <%s>\n%s", cmd.Name, arg.Name, cmd.Description))
+			return true
+		}
+	}
+
+	prompt, err := renderCommand(cmd, rawArgs)
+	if err != nil {
+		a.io.Error(err.Error())
+		return true
+	}
+
+	// Show the rendered prompt as a user message and inject into the conversation.
+	a.io.SystemMessage(fmt.Sprintf("[/%s] %s", cmd.Name, truncate(prompt, 200)))
+	a.session.AddMessage(provider.Message{
+		Role: provider.RoleUser,
+		Content: []provider.Content{{
+			Type: provider.ContentTypeText,
+			Text: prompt,
+		}},
+	})
+
+	// Run the agent loop to process the command.
+	if err := a.runAgentLoop(ctx); err != nil {
+		a.io.Error(err.Error())
+	}
 	return true
 }
 

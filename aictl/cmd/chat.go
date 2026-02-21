@@ -49,6 +49,12 @@ func runChat() error {
 	}
 	defer store.Close()
 
+	memStore, err := session.NewSQLiteMemoryStore(store.DB())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open memory store:", err)
+		os.Exit(1)
+	}
+
 	// Provider factory for /provider hot-swap.
 	factory := agent.ProviderFactory(func(c *config.Config) (provider.Provider, error) {
 		return buildProvider(c)
@@ -77,6 +83,7 @@ func runChat() error {
 			}
 			a := agent.NewWithSession(p, executor, cfg, ui, store, sess)
 			a.SetProviderFactory(factory)
+			a.SetMemoryStore(memStore)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -98,6 +105,7 @@ func runChat() error {
 
 	a := agent.New(p, executor, cfg, ui, store)
 	a.SetProviderFactory(factory)
+	a.SetMemoryStore(memStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

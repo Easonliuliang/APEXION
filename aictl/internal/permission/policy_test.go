@@ -156,6 +156,174 @@ func TestDefaultPolicy_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestDefaultPolicy_SessionApprovalMemory(t *testing.T) {
+	p := NewDefaultPolicy(&config.PermissionConfig{
+		Mode: "interactive",
+	})
+
+	params := makeParams(map[string]string{"command": "npm install"})
+
+	// Before approval: needs confirmation.
+	if d := p.Check("bash", params); d != NeedConfirmation {
+		t.Fatalf("should need confirmation before approval, got %v", d)
+	}
+
+	// Remember approval.
+	p.RememberApproval("bash", params)
+
+	// After approval: auto-approved (same command prefix "npm").
+	if d := p.Check("bash", params); d != Allow {
+		t.Errorf("should be allowed after approval, got %v", d)
+	}
+
+	// Similar command with same prefix also auto-approved.
+	params2 := makeParams(map[string]string{"command": "npm run build"})
+	if d := p.Check("bash", params2); d != Allow {
+		t.Errorf("same prefix 'npm' should be auto-approved, got %v", d)
+	}
+
+	// Different command prefix still needs confirmation.
+	params3 := makeParams(map[string]string{"command": "pip install foo"})
+	if d := p.Check("bash", params3); d != NeedConfirmation {
+		t.Errorf("different prefix 'pip' should still need confirmation, got %v", d)
+	}
+}
+
+func TestDefaultPolicy_SessionApprovalFileTools(t *testing.T) {
+	p := NewDefaultPolicy(&config.PermissionConfig{
+		Mode: "interactive",
+	})
+
+	params := makeParams(map[string]string{"file_path": "/tmp/test.go"})
+
+	// Before approval.
+	if d := p.Check("edit_file", params); d != NeedConfirmation {
+		t.Fatalf("should need confirmation, got %v", d)
+	}
+
+	// Approve edit_file for this path.
+	p.RememberApproval("edit_file", params)
+
+	// Same tool+path: auto-approved.
+	if d := p.Check("edit_file", params); d != Allow {
+		t.Errorf("should be allowed after approval, got %v", d)
+	}
+
+	// Different path: still needs confirmation.
+	params2 := makeParams(map[string]string{"file_path": "/tmp/other.go"})
+	if d := p.Check("edit_file", params2); d != NeedConfirmation {
+		t.Errorf("different path should still need confirmation, got %v", d)
+	}
+
+	// write_file is a different tool key, even for the same path.
+	if d := p.Check("write_file", params); d != NeedConfirmation {
+		t.Errorf("write_file for same path should need separate approval, got %v", d)
+	}
+}
+
+func TestDefaultPolicy_ApprovalReset(t *testing.T) {
+	p := NewDefaultPolicy(&config.PermissionConfig{
+		Mode: "interactive",
+	})
+
+	params := makeParams(map[string]string{"command": "go run main.go"})
+	p.RememberApproval("bash", params)
+
+	if d := p.Check("bash", params); d != Allow {
+		t.Fatalf("should be allowed after approval, got %v", d)
+	}
+
+	// Reset clears all approvals.
+	p.ResetApprovals()
+
+	if d := p.Check("bash", params); d != NeedConfirmation {
+		t.Errorf("should need confirmation after reset, got %v", d)
+	}
+}
+
+func TestDefaultPolicy_ApprovalsDisplay(t *testing.T) {
+	p := NewDefaultPolicy(&config.PermissionConfig{
+		Mode: "interactive",
+	})
+
+	// Empty approvals.
+	if s := p.Approvals(); s != "" {
+		t.Errorf("empty approvals should return empty string, got %q", s)
+	}
+
+	p.RememberApproval("bash", makeParams(map[string]string{"command": "go test ./..."}))
+	p.RememberApproval("edit_file", makeParams(map[string]string{"file_path": "/tmp/x.go"}))
+
+	s := p.Approvals()
+	if s == "" {
+		t.Fatal("approvals should not be empty after adding")
+	}
+	if !contains(s, "bash:go") {
+		t.Errorf("approvals should contain 'bash:go', got %q", s)
+	}
+	if !contains(s, "edit_file:/tmp/x.go") {
+		t.Errorf("approvals should contain 'edit_file:/tmp/x.go', got %q", s)
+	}
+	if !contains(s, "Session approvals (2)") {
+		t.Errorf("approvals should show count 2, got %q", s)
+	}
+}
+
+func TestDefaultPolicy_ApprovalAutoApproveMode(t *testing.T) {
+	p := NewDefaultPolicy(&config.PermissionConfig{
+		Mode: "auto-approve",
+	})
+
+	// In auto-approve mode, unknown bash commands need confirmation.
+	params := makeParams(map[string]string{"command": "docker compose up"})
+	if d := p.Check("bash", params); d != NeedConfirmation {
+		t.Fatalf("unknown bash cmd should need confirmation in auto-approve, got %v", d)
+	}
+
+	// After approval, auto-approved.
+	p.RememberApproval("bash", params)
+	if d := p.Check("bash", params); d != Allow {
+		t.Errorf("should be auto-approved after approval, got %v", d)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+func TestApprovalKey(t *testing.T) {
+	tests := []struct {
+		tool   string
+		params map[string]string
+		want   string
+	}{
+		{"bash", map[string]string{"command": "go test ./..."}, "bash:go"},
+		{"bash", map[string]string{"command": "npm install"}, "bash:npm"},
+		{"bash", map[string]string{"command": "make"}, "bash:make"},
+		{"edit_file", map[string]string{"file_path": "/tmp/foo.go"}, "edit_file:/tmp/foo.go"},
+		{"write_file", map[string]string{"file_path": "/tmp/bar.go"}, "write_file:/tmp/bar.go"},
+		{"question", nil, "question"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := approvalKey(tt.tool, makeParams(tt.params))
+			if got != tt.want {
+				t.Errorf("approvalKey(%q, %v) = %q, want %q", tt.tool, tt.params, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultPolicy_CommandBoundary(t *testing.T) {
 	p := NewDefaultPolicy(&config.PermissionConfig{
 		Mode:            "interactive",

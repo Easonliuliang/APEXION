@@ -2,8 +2,10 @@ package permission
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/aictl/aictl/internal/config"
 )
@@ -15,6 +17,11 @@ type DefaultPolicy struct {
 	allowedCommands  []string
 	deniedCommands   []string
 	allowedPaths     []string
+
+	// Session-level approval memory: once a user confirms a tool+pattern,
+	// subsequent similar calls are auto-approved within the same session.
+	mu        sync.RWMutex
+	approvals map[string]bool // key: "tool:pattern"
 }
 
 // NewDefaultPolicy creates a policy from config.
@@ -29,6 +36,7 @@ func NewDefaultPolicy(cfg *config.PermissionConfig) *DefaultPolicy {
 		allowedCommands:  cfg.AllowedCommands,
 		deniedCommands:   cfg.DeniedCommands,
 		allowedPaths:     cfg.AllowedPaths,
+		approvals:        make(map[string]bool),
 	}
 }
 
@@ -67,6 +75,9 @@ func (p *DefaultPolicy) Check(toolName string, params json.RawMessage) Decision 
 			if p.isCommandAllowed(cmd) {
 				return Allow
 			}
+			if p.HasApproval(toolName, params) {
+				return Allow
+			}
 			return NeedConfirmation
 		}
 		// Non-bash tools in auto-approve mode.
@@ -80,6 +91,12 @@ func (p *DefaultPolicy) Check(toolName string, params json.RawMessage) Decision 
 			return Allow
 		}
 	}
+
+	// Check session-level approval memory before requiring confirmation.
+	if p.HasApproval(toolName, params) {
+		return Allow
+	}
+
 	return NeedConfirmation
 }
 
@@ -147,6 +164,67 @@ func (p *DefaultPolicy) isPathAllowed(path string) bool {
 		}
 	}
 	return false
+}
+
+// approvalKey generates a key for the session approval map.
+// For bash: "bash:cmd_prefix" (first word of command).
+// For file tools: "edit_file:/path" or "write_file:/path".
+// For others: just the tool name.
+func approvalKey(toolName string, params json.RawMessage) string {
+	switch toolName {
+	case "bash":
+		cmd := strings.TrimSpace(extractField(params, "command"))
+		// Use first word as the approval pattern (e.g., "go", "npm", "make").
+		if i := strings.IndexByte(cmd, ' '); i > 0 {
+			return "bash:" + cmd[:i]
+		}
+		return "bash:" + cmd
+	case "edit_file", "write_file":
+		path := extractField(params, "file_path")
+		return toolName + ":" + path
+	default:
+		return toolName
+	}
+}
+
+// RememberApproval stores a session-level approval for a tool+params pattern.
+func (p *DefaultPolicy) RememberApproval(toolName string, params json.RawMessage) {
+	key := approvalKey(toolName, params)
+	p.mu.Lock()
+	p.approvals[key] = true
+	p.mu.Unlock()
+}
+
+// HasApproval checks if a similar tool call was previously approved in this session.
+func (p *DefaultPolicy) HasApproval(toolName string, params json.RawMessage) bool {
+	key := approvalKey(toolName, params)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.approvals[key]
+}
+
+// Approvals returns a formatted list of current session approvals.
+func (p *DefaultPolicy) Approvals() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if len(p.approvals) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Session approvals (%d):\n", len(p.approvals)))
+	for key := range p.approvals {
+		sb.WriteString("  " + key + "\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// ResetApprovals clears all session-level approvals.
+func (p *DefaultPolicy) ResetApprovals() {
+	p.mu.Lock()
+	p.approvals = make(map[string]bool)
+	p.mu.Unlock()
 }
 
 // extractField extracts a string field from JSON params.

@@ -81,6 +81,11 @@ func (e *Executor) Registry() *Registry {
 	return e.registry
 }
 
+// Policy returns the underlying permission policy.
+func (e *Executor) Policy() permission.Policy {
+	return e.policy
+}
+
 // Execute 执行单个工具调用
 func (e *Executor) Execute(ctx context.Context, name string, params json.RawMessage) ToolResult {
 	tool, ok := e.registry.Get(name)
@@ -115,6 +120,10 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 					IsError:       false,
 					UserCancelled: true,
 				}
+			}
+			// Remember this approval for the session so similar calls auto-approve.
+			if dp, ok := e.policy.(*permission.DefaultPolicy); ok {
+				dp.RememberApproval(name, params)
 			}
 		}
 	case permission.Allow:

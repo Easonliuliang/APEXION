@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -46,7 +48,7 @@ type subAgentProgressMsg struct{ progress SubAgentProgress }
 type questionMsg struct {
 	question string
 	options  []string
-	replyCh  chan string // sends selected option text; closed on cancel
+	replyCh  chan string
 }
 
 // ---------- spinner activity kinds ----------
@@ -68,11 +70,11 @@ type toolCallState struct {
 
 // TUIConfig carries version/provider info for the welcome page and status bar.
 type TUIConfig struct {
-	Version     string // e.g. "v0.1.0"
-	Provider    string // e.g. "deepseek"
-	Model       string // e.g. "deepseek-chat"
-	SessionID   string // first 8 chars of session ID
-	ShowWelcome bool   // false for run mode (non-interactive)
+	Version     string
+	Provider    string
+	Model       string
+	SessionID   string
+	ShowWelcome bool
 }
 
 // ---------- styles ----------
@@ -95,40 +97,54 @@ var (
 			Foreground(lipgloss.Color("39")).
 			Bold(true)
 
+	// spinnerStyle: orange while active (matches ⏺ running color)
 	spinnerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")) // gray spinner
+			Foreground(lipgloss.Color("214"))
 
-	// Tool call styles — minimalist gray left line
-	toolBorderStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderForeground(lipgloss.Color("7")).
-			PaddingLeft(1)
+	// ── tool call: ⏺ dot ──────────────────────────────────────────────────
+	// Orange while running, gray when done — same as Claude Code.
+	dotRunningStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+
+	dotDoneStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245"))
+
+	// ── tool result: "  ⎿  " prefix ──────────────────────────────────────
+	resultPrefixStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
 
 	toolNameStyle = lipgloss.NewStyle().
 			Bold(true)
 
 	toolParamStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")) // light gray
+			Foreground(lipgloss.Color("245"))
 
-	toolSuccessStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("2")) // green
+	toolOutputStyle = lipgloss.NewStyle() // raw output lines: default color
 
 	toolErrorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("9")) // dark red
+			Foreground(lipgloss.Color("196"))
 
-	// Status bar styles
+	toolSuccessStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("2"))
+
+	hintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Italic(true)
+
+	// Status bar
 	separatorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("238")) // dark gray line
+			Foreground(lipgloss.Color("238"))
 
 	statusBarBgStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("235"))
 
 	statusModelStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("235")).
-				Foreground(lipgloss.Color("2")). // green model name
+				Foreground(lipgloss.Color("2")).
 				Bold(true)
 
-	// Welcome box styles
+	// Welcome box
 	welcomeBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("8")).
@@ -147,16 +163,16 @@ var (
 	welcomeHintStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("245"))
 
-	// Confirm styles
+	// Confirm / permission: rounded border, blue-purple (matches Claude Code)
 	confirmBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(lipgloss.Color("3")). // yellow left line
-				PaddingLeft(1)
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("63")).
+				Padding(0, 1)
 
 	confirmDangerBorderStyle = lipgloss.NewStyle().
-					Border(lipgloss.NormalBorder(), false, false, false, true).
-					BorderForeground(lipgloss.Color("9")). // red left line
-					PaddingLeft(1)
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("196")).
+					Padding(0, 1)
 
 	confirmHintStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("237")).
@@ -167,66 +183,64 @@ var (
 
 	confirmDangerHintStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("237")).
-				Foreground(lipgloss.Color("203")). // subtle red text
+				Foreground(lipgloss.Color("203")).
 				Padding(0, 2).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("238"))
 )
 
+// claudeSpinner matches Claude Code's spinner character set and speed.
+var claudeSpinner = spinner.Spinner{
+	Frames: []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"},
+	FPS:    120 * time.Millisecond,
+}
+
 // ---------- Model ----------
 
 // Model is the bubbletea model managing the full TUI state.
-//
-// Rendering strategy (inline mode, no alt-screen):
-//   - Completed content is pushed to terminal scrollback via tea.Println().
-//   - View() only renders the "live" area: current streaming text, running
-//     tool block, input line, and status bar.
-//   - The terminal natively handles scrollback and mouse selection.
 type Model struct {
 	textinput    textinput.Model
 	spinner      spinner.Model
 	width        int
 	height       int
-	liveContent  *strings.Builder // pointer: avoids panic when bubbletea copies Model by value
-	streaming    bool            // LLM text deltas are arriving
-	inputMode    bool            // text input is active (waiting for user)
-	spinnerKind spinnerKind      // what the spinner is showing for
+	liveContent  *strings.Builder
+	streaming    bool
+	inputMode    bool
+	spinnerKind  spinnerKind
 
-	currentTool          *toolCallState // in-flight tool call (nil when idle)
-	currentToolConfirmed bool           // true if tool was already shown in confirm block
+	currentTool          *toolCallState
+	currentToolConfirmed bool
 
-	confirming   bool                  // waiting for confirmation
-	confirmCh    chan bool             // send user's answer back to agent goroutine
-	confirmLevel tools.PermissionLevel // permission level of current confirmation
+	confirming   bool
+	confirmCh    chan bool
+	confirmLevel tools.PermissionLevel
 
-	questioning   bool        // waiting for question answer
-	questionCh    chan string  // send user's answer back
-	questionOpts  []string    // available options
-	questionSel   int         // currently highlighted option (0-based)
+	questioning  bool
+	questionCh   chan string
+	questionOpts []string
+	questionSel  int
 
-	inputCh chan inputResult // send user input back to ReadInput()
+	inputCh chan inputResult
 
-	noiseDropCount int // after terminal noise, drop next N single-char key events
+	noiseDropCount int
 
 	quitting bool
 
-	// status bar
 	tokens        int
-	toolName      string    // current tool being executed (empty = none)
-	toolStartTime time.Time // when the current tool started
+	toolName      string
+	toolStartTime time.Time
 
-	cancelToolFn func() bool // injected from TuiIO to cancel running tool
-	cancelLoopFn func() bool // injected from TuiIO to cancel entire agent loop
+	cancelToolFn func() bool
+	cancelLoopFn func() bool
 
-	// sub-agent progress (shown when a "task" tool is running)
-	subAgentTool  string // sub-agent's current tool name
-	subAgentCount int    // sub-agent's total tool calls
+	subAgentTool  string
+	subAgentCount int
 
-	cfg     TUIConfig // version/provider info
+	cfg     TUIConfig
 	program *tea.Program
 
-	mdRenderer      *glamour.TermRenderer // cached markdown renderer (avoids terminal queries)
-	mdRendererWidth int                   // width the renderer was created for
+	mdRenderer      *glamour.TermRenderer
+	mdRendererWidth int
 }
 
 // NewModel creates the initial bubbletea model.
@@ -236,7 +250,7 @@ func NewModel(inputCh chan inputResult, cfg TUIConfig) Model {
 	ti.CharLimit = 4096
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = claudeSpinner
 	sp.Style = spinnerStyle
 
 	return Model{
@@ -253,10 +267,6 @@ func toolTickCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	// NOTE: Do NOT start textinput.Blink here. Blink fires every ~530ms,
-	// causing Update→View→repaint cycles that make the terminal auto-scroll
-	// to the bottom, preventing native scrollback from working.
-	// The textinput cursor will be static but scrollback works.
 	var cmds []tea.Cmd
 	if m.cfg.ShowWelcome {
 		cmds = append(cmds, tea.Println(renderWelcome(m.cfg)))
@@ -272,7 +282,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.textinput.Width = m.width - 4 // account for prompt
+		m.textinput.Width = m.width - 4
 
 	case spinner.TickMsg:
 		if m.spinnerKind != spinnerNone {
@@ -282,7 +292,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		// Filter out terminal escape sequences leaking as key events.
 		s := msg.String()
 		if isTerminalNoiseKey(s) {
 			m.noiseDropCount = 4
@@ -405,8 +414,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case readInputMsg:
 		m.inputMode = true
 		m.textinput.Focus()
-		// No textinput.Blink — static cursor keeps idle redraws at zero,
-		// allowing native terminal scrollback to work.
 
 	case userMsg:
 		cmds = append(cmds, tea.Println(userStyle.Render("You: "+msg.text)))
@@ -445,22 +452,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.subAgentCount = 0
 		m.currentTool = &toolCallState{
 			name:   msg.name,
-			params: formatToolParams(msg.params),
+			params: msg.params,
 		}
 		cmds = append(cmds, toolTickCmd(), m.spinner.Tick)
 
 	case toolDoneMsg:
 		if m.currentTool != nil {
+			elapsed := time.Since(m.toolStartTime)
 			var line string
 			if m.currentToolConfirmed {
-				if msg.isErr {
-					line = toolErrorStyle.Render("  ✗ " + truncateStr(msg.result, 200))
-				} else {
-					summary := truncateStr(strings.ReplaceAll(msg.result, "\n", " "), 120)
-					line = toolSuccessStyle.Render("  ✓ " + summary)
-				}
+				// Confirm block already printed the header — just show the result block.
+				line = renderResultBlock(msg.name, msg.result, msg.isErr)
 			} else {
-				line = m.renderToolDone(m.currentTool, msg.result, msg.isErr)
+				line = m.renderToolDone(m.currentTool, msg.result, msg.isErr, elapsed)
 			}
 			cmds = append(cmds, tea.Println(line))
 		}
@@ -512,11 +516,11 @@ func (m Model) View() string {
 		return ""
 	}
 
-	// === Live area (content that is currently changing) ===
 	var live string
 	switch m.spinnerKind {
 	case spinnerThinking:
-		live = m.spinner.View() + " Thinking..."
+		// ✶ Thinking… — matches Claude Code's thinking indicator
+		live = dotRunningStyle.Render(m.spinner.View()) + hintStyle.Render(" Thinking…")
 	case spinnerTool:
 		if m.currentTool != nil {
 			live = m.renderToolRunning(m.currentTool)
@@ -527,7 +531,6 @@ func (m Model) View() string {
 		}
 	}
 
-	// === Input line ===
 	var input string
 	if m.questioning {
 		sel := ""
@@ -547,10 +550,8 @@ func (m Model) View() string {
 		input = systemStyle.Render("❯")
 	}
 
-	// === Status bar ===
 	bar := m.renderStatusBar()
 
-	// Combine: live content (if any) + input + status bar
 	var parts []string
 	if live != "" {
 		parts = append(parts, live)
@@ -561,43 +562,50 @@ func (m Model) View() string {
 
 // ---------- tool call rendering ----------
 
-// renderToolRunning renders an in-flight tool call block with spinner (2-3 lines).
+// renderToolRunning renders an in-flight tool call (shown in live View area).
+//
+//	⏺ Read(…/main.go)  3s · esc to cancel
+//	  ⎿  Running…
 func (m *Model) renderToolRunning(tc *toolCallState) string {
-	name := toolNameStyle.Render(tc.name)
-	params := toolParamStyle.Render(tc.params)
+	header := toolHeader(tc.name, tc.params, true)
 	elapsed := int(time.Since(m.toolStartTime).Seconds())
-	status := fmt.Sprintf("%s running... (%ds)  esc to cancel", m.spinner.View(), elapsed)
+	hint := hintStyle.Render(fmt.Sprintf("  %ds · esc to cancel", elapsed))
 
-	// Sub-agent progress: show current tool on an extra line
+	prefix := resultPrefixStyle.Render("  ⎿  ")
+	runningLine := prefix + hintStyle.Render("Running…")
+
+	// Sub-agent: show current sub-tool on a second ⎿ line
 	if tc.name == "task" && m.subAgentTool != "" {
-		subLine := toolParamStyle.Render(fmt.Sprintf("  └ %s  (%d tool calls)", m.subAgentTool, m.subAgentCount))
-		inner := name + "  " + params + "\n" + subLine + "\n" + status
-		return toolBorderStyle.Render(inner)
+		subLine := prefix + toolParamStyle.Render(
+			fmt.Sprintf("  └ %s (%d calls)", m.subAgentTool, m.subAgentCount))
+		return header + hint + "\n" + runningLine + "\n" + subLine
 	}
 
-	inner := name + "  " + params + "\n" + status
-	return toolBorderStyle.Render(inner)
+	return header + hint + "\n" + runningLine
 }
 
-// renderToolDone renders a completed tool call block (single line).
-func (m *Model) renderToolDone(tc *toolCallState, result string, isErr bool) string {
-	name := toolNameStyle.Render(tc.name)
-	var status string
-	if isErr {
-		status = toolErrorStyle.Render("✗ " + truncateStr(result, 200))
-	} else {
-		summary := truncateStr(strings.ReplaceAll(result, "\n", " "), 120)
-		status = toolSuccessStyle.Render("✓ " + summary)
-	}
-	inner := name + "  " + status
-	return toolBorderStyle.Render(inner)
+// renderToolDone renders a completed tool call (printed to scrollback).
+//
+//	⏺ Read(…/main.go)  1.2s
+//	  ⎿  Read 42 lines
+func (m *Model) renderToolDone(tc *toolCallState, result string, isErr bool, elapsed time.Duration) string {
+	header := toolHeader(tc.name, tc.params, false)
+	hint := hintStyle.Render("  " + formatElapsed(elapsed))
+	resultBlock := renderResultBlock(tc.name, result, isErr)
+	return header + hint + "\n" + resultBlock
 }
 
-// renderConfirmBlock renders the permission confirmation as a styled inline block.
+// renderConfirmBlock renders the permission dialog as a rounded-border box.
 func (m *Model) renderConfirmBlock(name, params string, level tools.PermissionLevel) string {
-	toolName := toolNameStyle.Render(name)
-	display := formatToolParams(params)
-	paramLine := toolParamStyle.Render(display)
+	displayName := toolDisplayName(name)
+	param := toolPrimaryParam(name, params)
+
+	var header string
+	if param != "" {
+		header = toolNameStyle.Render(displayName) + toolParamStyle.Render("("+param+")")
+	} else {
+		header = toolNameStyle.Render(displayName)
+	}
 
 	border := confirmBorderStyle
 	if level >= tools.PermissionDangerous {
@@ -605,11 +613,18 @@ func (m *Model) renderConfirmBlock(name, params string, level tools.PermissionLe
 	}
 
 	var lines []string
-	lines = append(lines, toolName)
-	lines = append(lines, paramLine)
+	lines = append(lines, header)
+	if param == "" && params != "" && params != "{}" {
+		// Show raw params if we couldn't extract a primary param
+		short := params
+		if len(short) > 80 {
+			short = short[:80] + "…"
+		}
+		lines = append(lines, toolParamStyle.Render(short))
+	}
 	if level >= tools.PermissionDangerous {
 		lines = append(lines, "")
-		lines = append(lines, confirmDangerHintStyle.Render("⚠ DANGEROUS"))
+		lines = append(lines, confirmDangerHintStyle.Render("⚠  DANGEROUS OPERATION"))
 	}
 
 	return border.Render(strings.Join(lines, "\n"))
@@ -620,22 +635,22 @@ func (m *Model) renderQuestionBlock(question string, options []string) string {
 	var lines []string
 	lines = append(lines, toolNameStyle.Render("? "+question))
 	for i, opt := range options {
-		prefix := fmt.Sprintf("  %d. ", i+1)
-		lines = append(lines, toolParamStyle.Render(prefix+opt))
+		lines = append(lines, toolParamStyle.Render(fmt.Sprintf("  %d. %s", i+1, opt)))
 	}
 	return confirmBorderStyle.Render(strings.Join(lines, "\n"))
 }
 
-// renderStatusBar renders the bottom status bar (separator + model/tokens/tool info).
+// renderStatusBar renders the bottom separator + model/tokens/tool bar.
 func (m *Model) renderStatusBar() string {
 	modelName := m.cfg.Model
 	if modelName == "" {
 		modelName = "unknown"
 	}
-	status := statusModelStyle.Render(" "+modelName) + statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
+	status := statusModelStyle.Render(" "+modelName) +
+		statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
 	if m.toolName != "" {
 		elapsed := int(time.Since(m.toolStartTime).Seconds())
-		status += statusBarStyle.Render(fmt.Sprintf(" │ tool: %s (%ds)", m.toolName, elapsed))
+		status += statusBarStyle.Render(fmt.Sprintf(" │ %s (%ds)", toolDisplayName(m.toolName), elapsed))
 	}
 	return separatorStyle.Width(m.width).Render(strings.Repeat("─", m.width)) + "\n" +
 		statusBarBgStyle.Width(m.width).Render(status)
@@ -643,9 +658,6 @@ func (m *Model) renderStatusBar() string {
 
 // ---------- markdown rendering ----------
 
-// getMarkdownRenderer returns a cached glamour renderer, recreating it only
-// when the terminal width changes. Uses DarkStyle to avoid terminal background
-// color queries that produce escape sequence responses leaking into textinput.
 func (m *Model) getMarkdownRenderer() *glamour.TermRenderer {
 	width := m.width
 	if width <= 0 {
@@ -667,7 +679,6 @@ func (m *Model) getMarkdownRenderer() *glamour.TermRenderer {
 	return r
 }
 
-// renderMarkdown renders text with glamour and trims trailing whitespace.
 func (m *Model) renderMarkdown(text string) string {
 	r := m.getMarkdownRenderer()
 	if r == nil {
@@ -683,7 +694,6 @@ func (m *Model) renderMarkdown(text string) string {
 // ---------- welcome page ----------
 
 func renderWelcome(cfg TUIConfig) string {
-	// Pixel cat logo
 	cat := []string{
 		"█▀▀▀▀▀█",
 		"█ ●  ● █",
@@ -697,7 +707,6 @@ func renderWelcome(cfg TUIConfig) string {
 		version = "dev"
 	}
 
-	// Right-side info lines (aligned with cat lines)
 	info := []string{
 		welcomeLabelStyle.Render("Provider: ") + welcomeValueStyle.Render(cfg.Provider),
 		welcomeLabelStyle.Render("Model:    ") + welcomeValueStyle.Render(cfg.Model),
@@ -706,9 +715,8 @@ func renderWelcome(cfg TUIConfig) string {
 		welcomeHintStyle.Render("/help 查看命令  /compact 压缩上下文  pgup/pgdn 滚动"),
 	}
 
-	// Combine cat + info side by side
 	var lines []string
-	catWidth := 10 // visual width of cat lines + padding
+	catWidth := 10
 	for i := 0; i < len(cat) || i < len(info); i++ {
 		left := ""
 		if i < len(cat) {
@@ -718,7 +726,6 @@ func renderWelcome(cfg TUIConfig) string {
 		if i < len(info) {
 			right = info[i]
 		}
-		// Pad left to fixed width using runewidth for accurate visual width
 		visualWidth := lipgloss.Width(left)
 		padding := catWidth - visualWidth
 		if padding < 0 {
@@ -726,66 +733,350 @@ func renderWelcome(cfg TUIConfig) string {
 		}
 		lines = append(lines, left+strings.Repeat(" ", padding)+right)
 	}
-	lines = append(lines, strings.Repeat(" ", catWidth)+welcomeHintStyle.Render("/sessions 历史  /resume <id> 恢复"))
+	lines = append(lines, strings.Repeat(" ", catWidth)+
+		welcomeHintStyle.Render("/sessions 历史  /resume <id> 恢复"))
 
 	inner := strings.Join(lines, "\n")
-
 	title := welcomeTitleStyle.Render(fmt.Sprintf("aictl %s", version))
-
 	box := welcomeBorderStyle.Render(inner)
-
 	return title + "\n" + box
 }
 
-// ---------- helpers ----------
+// ---------- tool display helpers ----------
 
-// formatToolParams extracts a compact display string from raw JSON params.
-func formatToolParams(raw string) string {
-	s := strings.TrimSpace(raw)
-	if len(s) > 120 {
-		s = s[:120] + "..."
+// toolHeader builds the "⏺ ToolName(param)" header line.
+// running=true → orange dot; running=false → gray dot.
+func toolHeader(name, rawParams string, running bool) string {
+	dot := "⏺"
+	var dotStr string
+	if running {
+		dotStr = dotRunningStyle.Render(dot)
+	} else {
+		dotStr = dotDoneStyle.Render(dot)
+	}
+
+	displayName := toolDisplayName(name)
+	param := toolPrimaryParam(name, rawParams)
+
+	var body string
+	if param != "" {
+		body = toolNameStyle.Render(displayName) + toolParamStyle.Render("("+param+")")
+	} else {
+		body = toolNameStyle.Render(displayName)
+	}
+	return dotStr + " " + body
+}
+
+// renderResultBlock renders the "  ⎿  ..." result lines.
+// For tools with rich output (bash, git_*): head+tail truncation.
+// For summary tools (read_file, list_dir, glob, grep): one-line semantic summary.
+func renderResultBlock(name, result string, isErr bool) string {
+	const resultPrefix = "  ⎿  "
+	const contPrefix = "     "
+
+	prefix := resultPrefixStyle.Render(resultPrefix)
+	cont := contPrefix // continuation lines: plain indent
+
+	if isErr {
+		truncated := truncateResult(result, 10)
+		return renderMultiLine(prefix, cont, truncated, toolErrorStyle)
+	}
+
+	switch name {
+	case "read_file":
+		n := countNonEmptyContent(result)
+		return prefix + toolParamStyle.Render(fmt.Sprintf("Read %d %s", n, pluralLine(n)))
+
+	case "write_file":
+		// result is usually "File written successfully" or similar
+		return prefix + toolSuccessStyle.Render(firstLine(result))
+
+	case "edit_file":
+		return prefix + toolSuccessStyle.Render(firstLine(result))
+
+	case "glob":
+		n := countNonEmptyLines(result)
+		return prefix + toolParamStyle.Render(fmt.Sprintf("Found %d %s", n, pluralFile(n)))
+
+	case "grep":
+		n := countNonEmptyLines(result)
+		return prefix + toolParamStyle.Render(fmt.Sprintf("Found %d %s", n, pluralMatch(n)))
+
+	case "list_dir":
+		n := countNonEmptyLines(result)
+		return prefix + toolParamStyle.Render(fmt.Sprintf("Listed %d %s", n, pluralEntry(n)))
+
+	case "todo_write", "todo_read":
+		if result == "" {
+			return prefix + hintStyle.Render("(empty)")
+		}
+		return prefix + toolParamStyle.Render(firstLine(result))
+
+	default:
+		// Multi-line output: bash, git_*, web_*, task, mcp__*, question
+		if strings.TrimSpace(result) == "" {
+			return prefix + hintStyle.Render("(no output)")
+		}
+		truncated := truncateResult(result, 13)
+		return renderMultiLine(prefix, cont, truncated, toolOutputStyle)
+	}
+}
+
+// renderMultiLine renders a (possibly multi-line) string with the given
+// prefix on the first line and contPrefix on subsequent lines.
+// Lines matching "… +N lines" are rendered in hintStyle.
+func renderMultiLine(prefix, contPrefix, text string, style lipgloss.Style) string {
+	lines := strings.Split(text, "\n")
+	// Trim trailing empty lines
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return prefix + hintStyle.Render("(no output)")
+	}
+
+	var out []string
+	for i, line := range lines {
+		p := contPrefix
+		if i == 0 {
+			p = prefix
+		}
+		if strings.HasPrefix(line, "… +") {
+			out = append(out, p+hintStyle.Render(line))
+		} else {
+			out = append(out, p+style.Render(line))
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// truncateResult keeps up to maxLines of output using a head + hint + tail format.
+//
+//	line1
+//	line2
+//
+//	… +47 lines
+//
+//	last1
+//	last2
+//	last3
+func truncateResult(s string, maxLines int) string {
+	lines := strings.Split(s, "\n")
+	// Trim trailing empty lines
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) <= maxLines {
+		return strings.Join(lines, "\n")
+	}
+
+	const tail = 3
+	head := maxLines - tail - 3 // 3 = blank + hint + blank
+	if head < 1 {
+		head = 1
+	}
+	skipped := len(lines) - head - tail
+
+	out := make([]string, 0, head+3+tail)
+	out = append(out, lines[:head]...)
+	out = append(out, "")
+	out = append(out, fmt.Sprintf("… +%d lines", skipped))
+	out = append(out, "")
+	out = append(out, lines[len(lines)-tail:]...)
+	return strings.Join(out, "\n")
+}
+
+// ---------- tool name / param helpers ----------
+
+var toolDisplayNames = map[string]string{
+	"read_file":  "Read",
+	"write_file": "Write",
+	"edit_file":  "Edit",
+	"bash":       "Bash",
+	"glob":       "Glob",
+	"grep":       "Search",
+	"list_dir":   "List",
+	"git_status": "GitStatus",
+	"git_diff":   "GitDiff",
+	"git_commit": "GitCommit",
+	"git_push":   "GitPush",
+	"web_fetch":  "WebFetch",
+	"web_search": "WebSearch",
+	"task":       "Task",
+	"question":   "Question",
+	"todo_write": "TodoWrite",
+	"todo_read":  "TodoRead",
+}
+
+// toolDisplayName converts an internal tool name to a user-facing display name.
+func toolDisplayName(name string) string {
+	if d, ok := toolDisplayNames[name]; ok {
+		return d
+	}
+	// MCP tools: mcp__server__tool → server:tool
+	if strings.HasPrefix(name, "mcp__") {
+		rest := name[5:]
+		if i := strings.Index(rest, "__"); i >= 0 {
+			return rest[:i] + ":" + rest[i+2:]
+		}
+		return rest
+	}
+	return name
+}
+
+// toolPrimaryParam extracts the most relevant single parameter from raw JSON params.
+func toolPrimaryParam(name, rawParams string) string {
+	if rawParams == "" || rawParams == "{}" {
+		return ""
+	}
+	var params map[string]any
+	if err := json.Unmarshal([]byte(rawParams), &params); err != nil {
+		return ""
+	}
+	strVal := func(key string) string {
+		if v, ok := params[key].(string); ok {
+			return v
+		}
+		return ""
+	}
+
+	var val string
+	switch name {
+	case "read_file", "write_file", "edit_file":
+		val = strVal("file_path")
+	case "bash":
+		val = strVal("command")
+	case "glob":
+		val = strVal("pattern")
+	case "grep":
+		val = strVal("pattern")
+	case "list_dir":
+		val = strVal("path")
+	case "web_fetch":
+		val = strVal("url")
+	case "web_search":
+		val = strVal("query")
+	case "git_diff":
+		val = strVal("target")
+	case "git_commit":
+		val = strVal("message")
+	case "task":
+		val = strVal("prompt")
+	default:
+		// MCP and unknown tools: try common param names
+		for _, key := range []string{"path", "file_path", "command", "query", "name", "url"} {
+			if v := strVal(key); v != "" {
+				val = v
+				break
+			}
+		}
+	}
+
+	if val == "" {
+		return ""
+	}
+
+	// Shorten file paths: keep last 2 path components
+	if strings.ContainsAny(val, "/\\") {
+		parts := strings.Split(filepath.ToSlash(val), "/")
+		if len(parts) > 2 {
+			val = "…/" + strings.Join(parts[len(parts)-2:], "/")
+		}
+	}
+
+	// Truncate long values
+	if len(val) > 45 {
+		val = val[:42] + "…"
+	}
+	return val
+}
+
+// ---------- time / count helpers ----------
+
+func formatElapsed(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+}
+
+func countNonEmptyContent(s string) int {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return 0
+	}
+	return len(lines)
+}
+
+func countNonEmptyLines(s string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func firstLine(s string) string {
+	if idx := strings.Index(s, "\n"); idx >= 0 {
+		return s[:idx]
 	}
 	return s
 }
 
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
+func pluralLine(n int) string {
+	if n == 1 {
+		return "line"
 	}
-	return s[:maxLen] + "..."
+	return "lines"
 }
 
+func pluralFile(n int) string {
+	if n == 1 {
+		return "file"
+	}
+	return "files"
+}
+
+func pluralMatch(n int) string {
+	if n == 1 {
+		return "match"
+	}
+	return "matches"
+}
+
+func pluralEntry(n int) string {
+	if n == 1 {
+		return "entry"
+	}
+	return "entries"
+}
+
+// ---------- key event helpers ----------
+
 func isTerminalNoiseKey(s string) bool {
-	// OSC responses: ]11;rgb:... background color, etc.
 	if strings.Contains(s, ";rgb:") || strings.HasPrefix(s, "]") || strings.HasPrefix(s, "alt+]") {
 		return true
 	}
-
-	// SGR mouse reports: \;N;NM or \;N;Nm
 	if (strings.HasSuffix(s, "M") || strings.HasSuffix(s, "m")) && strings.Contains(s, ";") {
 		return true
 	}
-
-	// CSI mouse/SGR sequences: [<... or alt+[<...
 	if strings.HasPrefix(s, "[<") || strings.HasPrefix(s, "alt+[<") {
 		return true
 	}
-
-	// DA (Device Attributes) responses: [?...c
 	if strings.HasPrefix(s, "[?") || strings.HasPrefix(s, "alt+[?") {
 		return true
 	}
-
-	// CSI parameter sequences: [N... (numeric params)
-	if len(s) > 1 && s[0] == '[' && len(s) > 1 && s[1] >= '0' && s[1] <= '9' {
+	if len(s) > 1 && s[0] == '[' && s[1] >= '0' && s[1] <= '9' {
 		return true
 	}
-
 	return false
 }
 
-// isControlKeyMsg returns true if the key string contains non-printable
-// control characters that should not be forwarded to the text input.
 func isControlKeyMsg(s string) bool {
 	for _, r := range s {
 		if r == '\x1b' || (r < 0x20 && r != '\t' && r != '\n' && r != '\r') {

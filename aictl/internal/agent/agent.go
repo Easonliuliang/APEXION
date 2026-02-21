@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/aictl/aictl/internal/config"
+	"github.com/aictl/aictl/internal/mcp"
 	"github.com/aictl/aictl/internal/permission"
 	"github.com/aictl/aictl/internal/provider"
 	"github.com/aictl/aictl/internal/session"
@@ -43,6 +44,7 @@ type Agent struct {
 	session         *session.Session
 	store           session.Store
 	memoryStore     session.MemoryStore
+	mcpManager      *mcp.Manager
 	basePrompt      string // system prompt without identity suffix
 	systemPrompt    string
 	io              tui.IO
@@ -98,6 +100,11 @@ func (a *Agent) SetProviderFactory(f ProviderFactory) {
 func (a *Agent) SetMemoryStore(ms session.MemoryStore) {
 	a.memoryStore = ms
 	a.rebuildSystemPrompt()
+}
+
+// SetMCPManager injects the MCP manager for /mcp command and status display.
+func (a *Agent) SetMCPManager(m *mcp.Manager) {
+	a.mcpManager = m
 }
 
 // rebuildSystemPrompt appends a dynamic identity suffix and persistent memories to basePrompt.
@@ -239,6 +246,8 @@ func (a *Agent) handleSlashCommand(ctx context.Context, input string) (bool, boo
 		return true, false
 	case "/memory":
 		return a.handleMemory(arg), false
+	case "/mcp":
+		return a.handleMCP(ctx, arg), false
 	default:
 		// Check custom commands.
 		name := strings.TrimPrefix(cmd, "/")
@@ -316,6 +325,8 @@ func (a *Agent) handleHelp() bool {
   /memory add <text>  Save a memory (add tags with #tag)
   /memory search <q>  Search memories
   /memory delete <id> Delete a memory
+  /mcp               Show MCP server connection status
+  /mcp reset         Reconnect all MCP servers
   /save              Save current session to disk
   /sessions          List saved sessions
   /resume <id>       Resume a saved session (use short ID prefix)
@@ -681,6 +692,51 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func (a *Agent) handleMCP(ctx context.Context, arg string) bool {
+	if a.mcpManager == nil {
+		a.io.SystemMessage("MCP not configured. Create ~/.config/aictl/mcp.json or .aictl/mcp.json.")
+		return true
+	}
+
+	switch strings.TrimSpace(arg) {
+	case "reset":
+		a.io.SystemMessage("Reconnecting MCP servers...")
+		errs := a.mcpManager.Reset(ctx)
+		if len(errs) > 0 {
+			var sb strings.Builder
+			sb.WriteString("MCP reconnect errors:\n")
+			for _, e := range errs {
+				sb.WriteString("  " + e.Error() + "\n")
+			}
+			a.io.SystemMessage(sb.String())
+		} else {
+			a.io.SystemMessage("MCP servers reconnected.")
+		}
+
+	default:
+		// 显示连接状态
+		status := a.mcpManager.Status()
+		if len(status) == 0 {
+			a.io.SystemMessage("No MCP servers configured.")
+			return true
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("MCP servers (%d):\n", len(status)))
+		names := make([]string, 0, len(status))
+		for n := range status {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			sb.WriteString(fmt.Sprintf("  %-20s %s\n", n, status[n]))
+		}
+		sb.WriteString("\nUse /mcp reset to reconnect all servers.")
+		a.io.SystemMessage(sb.String())
+	}
+
+	return true
 }
 
 // wireTaskTool finds the TaskTool in the registry and injects the sub-agent runner.

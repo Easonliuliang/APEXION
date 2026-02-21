@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/aictl/aictl/internal/agent"
 	"github.com/aictl/aictl/internal/config"
+	"github.com/aictl/aictl/internal/mcp"
 	"github.com/aictl/aictl/internal/permission"
 	"github.com/aictl/aictl/internal/provider"
 	"github.com/aictl/aictl/internal/session"
@@ -36,6 +38,25 @@ func runChat() error {
 	})
 	policy := permission.NewDefaultPolicy(&cfg.Permissions)
 	executor := tools.NewExecutor(registry, policy)
+
+	// MCP：加载配置、连接所有 server、注册工具
+	cwd, _ := os.Getwd()
+	mcpCfg, _ := mcp.LoadMCPConfig(cwd)
+	var mcpMgr *mcp.Manager
+	if mcpCfg != nil && len(mcpCfg.MCPServers) > 0 {
+		mcpMgr = mcp.NewManager(mcpCfg)
+		defer mcpMgr.Close()
+		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		errs := mcpMgr.ConnectAll(initCtx)
+		initCancel()
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "[mcp] warning: %v\n", e)
+		}
+		n := mcp.RegisterTools(mcpMgr, registry)
+		if n > 0 {
+			fmt.Fprintf(os.Stderr, "[mcp] registered %d tool(s)\n", n)
+		}
+	}
 
 	dbPath, err := session.DefaultDBPath()
 	if err != nil {
@@ -84,6 +105,9 @@ func runChat() error {
 			a := agent.NewWithSession(p, executor, cfg, ui, store, sess)
 			a.SetProviderFactory(factory)
 			a.SetMemoryStore(memStore)
+			if mcpMgr != nil {
+				a.SetMCPManager(mcpMgr)
+			}
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -106,6 +130,9 @@ func runChat() error {
 	a := agent.New(p, executor, cfg, ui, store)
 	a.SetProviderFactory(factory)
 	a.SetMemoryStore(memStore)
+	if mcpMgr != nil {
+		a.SetMCPManager(mcpMgr)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

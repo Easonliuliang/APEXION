@@ -23,7 +23,18 @@ type TuiIO struct {
 
 var _ IO = (*TuiIO)(nil)
 
+// send is a nil-safe helper that sends a message to the bubbletea program.
+// Fire-and-forget methods use this to avoid panicking when program is nil.
+func (t *TuiIO) send(msg tea.Msg) {
+	if t.program != nil {
+		t.program.Send(msg)
+	}
+}
+
 func (t *TuiIO) ReadInput() (string, error) {
+	if t.program == nil {
+		return "", io.EOF
+	}
 	// Tell the TUI to activate the text input
 	t.program.Send(readInputMsg{})
 
@@ -36,30 +47,33 @@ func (t *TuiIO) ReadInput() (string, error) {
 }
 
 func (t *TuiIO) UserMessage(text string) {
-	t.program.Send(userMsg{text: text})
+	t.send(userMsg{text: text})
 }
 
 func (t *TuiIO) ThinkingStart() {
-	t.program.Send(thinkingStartMsg{})
+	t.send(thinkingStartMsg{})
 }
 
 func (t *TuiIO) TextDelta(delta string) {
-	t.program.Send(textDeltaMsg{delta: delta})
+	t.send(textDeltaMsg{delta: delta})
 }
 
 func (t *TuiIO) TextDone(fullText string) {
-	t.program.Send(textDoneMsg{fullText: fullText})
+	t.send(textDoneMsg{fullText: fullText})
 }
 
 func (t *TuiIO) ToolStart(id, name, params string) {
-	t.program.Send(toolStartMsg{id: id, name: name, params: params})
+	t.send(toolStartMsg{id: id, name: name, params: params})
 }
 
 func (t *TuiIO) ToolDone(id, name, result string, isErr bool) {
-	t.program.Send(toolDoneMsg{id: id, name: name, result: result, isErr: isErr})
+	t.send(toolDoneMsg{id: id, name: name, result: result, isErr: isErr})
 }
 
 func (t *TuiIO) Confirm(name, params string, level tools.PermissionLevel) bool {
+	if t.program == nil {
+		return false
+	}
 	replyCh := make(chan bool, 1)
 	t.program.Send(confirmMsg{
 		name:    name,
@@ -71,20 +85,23 @@ func (t *TuiIO) Confirm(name, params string, level tools.PermissionLevel) bool {
 }
 
 func (t *TuiIO) SystemMessage(text string) {
-	t.program.Send(systemMsg{text: text})
+	t.send(systemMsg{text: text})
 }
 
 func (t *TuiIO) Error(msg string) {
-	t.program.Send(errorMsg{text: msg})
+	t.send(errorMsg{text: msg})
 }
 
 func (t *TuiIO) SetTokens(n int) {
-	t.program.Send(tokensMsg{n: n})
+	t.send(tokensMsg{n: n})
 }
 
 // --- Questioner implementation ---
 
 func (t *TuiIO) AskQuestion(question string, options []string) (string, error) {
+	if t.program == nil {
+		return "", fmt.Errorf("no TUI program available")
+	}
 	replyCh := make(chan string, 1)
 	t.program.Send(questionMsg{
 		question: question,
@@ -102,7 +119,7 @@ func (t *TuiIO) AskQuestion(question string, options []string) (string, error) {
 
 // ReportSubAgentProgress sends sub-agent progress to the TUI for rendering.
 func (t *TuiIO) ReportSubAgentProgress(p SubAgentProgress) {
-	t.program.Send(subAgentProgressMsg{progress: p})
+	t.send(subAgentProgressMsg{progress: p})
 }
 
 // --- ToolCanceller implementation ---

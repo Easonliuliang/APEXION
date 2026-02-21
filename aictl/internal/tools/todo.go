@@ -16,10 +16,21 @@ type TodoItem struct {
 }
 
 // todoStore is a process-level in-memory todo list shared across tool calls.
+// This is intentionally a package-level global: each aictl process runs a
+// single session, so there is no need for per-session isolation. The mutex
+// protects concurrent access from parallel tool calls within the same turn.
 var (
 	todoItems []TodoItem
 	todoMu    sync.Mutex
 )
+
+// ResetTodoState clears the global todo list. Intended for use in tests
+// to ensure isolation between test cases.
+func ResetTodoState() {
+	todoMu.Lock()
+	defer todoMu.Unlock()
+	todoItems = nil
+}
 
 // ---------- todo_write ----------
 

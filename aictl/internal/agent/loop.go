@@ -244,8 +244,8 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 				results = append(results, provider.Content{
 					Type:       provider.ContentTypeToolResult,
 					ToolUseID:  remaining.ID,
-					ToolResult: "Interrupted",
-					IsError:    true,
+					ToolResult: "[User cancelled this turn — tool was not executed. Do not retry unless the user asks.]",
+					IsError:    false,
 				})
 			}
 			return results, true

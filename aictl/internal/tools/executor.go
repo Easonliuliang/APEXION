@@ -84,8 +84,8 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 	// during streaming before we even got to tool execution).
 	if ctx.Err() == context.Canceled {
 		return ToolResult{
-			Content:       "Interrupted",
-			IsError:       true,
+			Content:       "[User cancelled — tool was not executed]",
+			IsError:       false,
 			UserCancelled: true,
 		}
 	}
@@ -103,8 +103,8 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 				// User pressed Esc on confirmation — this IS user cancellation.
 				// Stop the loop, return to user input.
 				return ToolResult{
-					Content:       "Interrupted",
-					IsError:       true,
+					Content:       "[User cancelled — tool was not executed]",
+					IsError:       false,
 					UserCancelled: true,
 				}
 			}
@@ -129,8 +129,8 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		if ctx.Err() == context.Canceled {
 			// User pressed Esc during tool execution.
 			return ToolResult{
-				Content:       "Interrupted",
-				IsError:       true,
+				Content:       "[User cancelled — tool was not executed]",
+				IsError:       false,
 				UserCancelled: true,
 			}
 		}

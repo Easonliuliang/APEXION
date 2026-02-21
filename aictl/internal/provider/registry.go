@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"fmt"
 	"sync"
 )
 
@@ -32,11 +31,3 @@ func (r *Registry) Get(name string) (Provider, bool) {
 	return p, ok
 }
 
-// MustGet returns a provider by name, panicking if not found.
-func (r *Registry) MustGet(name string) Provider {
-	p, ok := r.Get(name)
-	if !ok {
-		panic(fmt.Sprintf("provider %q not registered", name))
-	}
-	return p
-}

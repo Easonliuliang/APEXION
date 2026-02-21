@@ -48,16 +48,31 @@ func fetchCacheGet(key string) (string, bool) {
 	return e.content, true
 }
 
+const fetchCacheMaxEntries = 200
+
 func fetchCacheSet(key, content string) {
 	fetchCacheMu.Lock()
 	defer fetchCacheMu.Unlock()
-	// Evict expired entries when cache grows large.
-	if len(fetchCache) > 100 {
+
+	// Hard cap: evict expired entries first, then oldest if still over limit.
+	if len(fetchCache) >= fetchCacheMaxEntries {
 		now := time.Now()
 		for k, e := range fetchCache {
 			if now.Sub(e.fetchedAt) > fetchCacheTTL {
 				delete(fetchCache, k)
 			}
+		}
+		// Still over limit — evict the oldest entry.
+		for len(fetchCache) >= fetchCacheMaxEntries {
+			var oldestKey string
+			var oldestTime time.Time
+			for k, e := range fetchCache {
+				if oldestKey == "" || e.fetchedAt.Before(oldestTime) {
+					oldestKey = k
+					oldestTime = e.fetchedAt
+				}
+			}
+			delete(fetchCache, oldestKey)
 		}
 	}
 	fetchCache[key] = fetchCacheEntry{content: content, fetchedAt: time.Now()}

@@ -84,10 +84,30 @@ func (p *DefaultPolicy) Check(toolName string, params json.RawMessage) Decision 
 }
 
 // isCommandAllowed checks if a bash command matches any whitelist prefix.
+// It enforces word boundaries (the character after the prefix must be a space
+// or end-of-string) and rejects commands containing shell metacharacters that
+// could be used for command injection.
 func (p *DefaultPolicy) isCommandAllowed(cmd string) bool {
 	cmd = strings.TrimSpace(cmd)
+	if containsShellMetachar(cmd) {
+		return false
+	}
 	for _, allowed := range p.allowedCommands {
 		if strings.HasPrefix(cmd, allowed) {
+			// Ensure word boundary: next char must be space or end-of-string.
+			if len(cmd) == len(allowed) || cmd[len(allowed)] == ' ' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsShellMetachar returns true if the command contains shell
+// metacharacters that could be used for command injection.
+func containsShellMetachar(cmd string) bool {
+	for _, meta := range []string{";", "|", "&&", "||", "$(", "`"} {
+		if strings.Contains(cmd, meta) {
 			return true
 		}
 	}
@@ -111,14 +131,17 @@ func (p *DefaultPolicy) isPathAllowed(path string) bool {
 	if len(p.allowedPaths) == 0 {
 		return true
 	}
+	// Normalize the path to prevent traversal attacks like ./src/../../../etc/passwd.
+	path = filepath.Clean(path)
 	for _, pattern := range p.allowedPaths {
 		if matched, _ := filepath.Match(pattern, path); matched {
 			return true
 		}
 		// Also try matching with ** style: check if path starts with the dir prefix.
 		if strings.HasSuffix(pattern, "/**") {
-			prefix := strings.TrimSuffix(pattern, "/**")
-			if strings.HasPrefix(path, prefix) {
+			prefix := filepath.Clean(strings.TrimSuffix(pattern, "/**"))
+			// Use prefix + separator to prevent "srcfoo/bar" matching "src".
+			if strings.HasPrefix(path, prefix+string(filepath.Separator)) {
 				return true
 			}
 		}

@@ -133,3 +133,58 @@ func TestDefaultPolicy_DeniedCommandContains(t *testing.T) {
 		t.Errorf("go test should be allowed, got %v", d)
 	}
 }
+
+func TestDefaultPolicy_PathTraversal(t *testing.T) {
+	p := NewDefaultPolicy(&config.PermissionConfig{
+		Mode:         "yolo",
+		AllowedPaths: []string{"./src/**"},
+	})
+
+	// Normal allowed path.
+	if d := p.Check("edit_file", makeParams(map[string]string{"file_path": "./src/main.go"})); d != Allow {
+		t.Errorf("./src/main.go should be allowed, got %v", d)
+	}
+
+	// Path traversal attack: should be denied after filepath.Clean.
+	if d := p.Check("edit_file", makeParams(map[string]string{"file_path": "./src/../../../etc/passwd"})); d != Deny {
+		t.Errorf("traversal path should be denied, got %v", d)
+	}
+
+	// Prefix confusion: "srcfoo/bar" should NOT match "src" prefix.
+	if d := p.Check("edit_file", makeParams(map[string]string{"file_path": "srcfoo/bar.go"})); d != Deny {
+		t.Errorf("srcfoo/bar.go should be denied (not a child of src), got %v", d)
+	}
+}
+
+func TestDefaultPolicy_CommandBoundary(t *testing.T) {
+	p := NewDefaultPolicy(&config.PermissionConfig{
+		Mode:            "interactive",
+		AllowedCommands: []string{"git", "go test"},
+	})
+
+	tests := []struct {
+		cmd  string
+		want Decision
+		desc string
+	}{
+		{"git status", Allow, "exact prefix with args"},
+		{"git", Allow, "exact prefix no args"},
+		{"go test ./...", Allow, "prefix with args"},
+		{"gitfoo", NeedConfirmation, "no word boundary"},
+		{"git; rm -rf /", NeedConfirmation, "shell injection via semicolon"},
+		{"git && echo pwned", NeedConfirmation, "shell injection via &&"},
+		{"git || true", NeedConfirmation, "shell injection via ||"},
+		{"git $(whoami)", NeedConfirmation, "shell injection via $()"},
+		{"git `whoami`", NeedConfirmation, "shell injection via backtick"},
+		{"git | cat", NeedConfirmation, "shell injection via pipe"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			got := p.Check("bash", makeParams(map[string]string{"command": tt.cmd}))
+			if got != tt.want {
+				t.Errorf("command %q: got %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}

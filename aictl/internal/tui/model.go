@@ -44,6 +44,11 @@ type tokensMsg struct{ n int }
 type agentDoneMsg struct{ err error }
 type toolTickMsg struct{}
 type subAgentProgressMsg struct{ progress SubAgentProgress }
+type questionMsg struct {
+	question string
+	options  []string
+	replyCh  chan string // sends selected option text; closed on cancel
+}
 
 // ---------- spinner activity kinds ----------
 
@@ -194,6 +199,11 @@ type Model struct {
 	confirmCh    chan bool             // send user's answer back to agent goroutine
 	confirmLevel tools.PermissionLevel // permission level of current confirmation
 
+	questioning   bool        // waiting for question answer
+	questionCh    chan string  // send user's answer back
+	questionOpts  []string    // available options
+	questionSel   int         // currently highlighted option (0-based)
+
 	inputCh chan inputResult // send user input back to ReadInput()
 
 	noiseDropCount int // after terminal noise, drop next N single-char key events
@@ -311,6 +321,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch s {
 		case "ctrl+c":
+			if m.questioning && m.questionCh != nil {
+				close(m.questionCh)
+				m.questioning = false
+				m.questionCh = nil
+				m.appendLine(systemStyle.Render("  [cancelled]"))
+				return m, nil
+			}
 			if m.confirming && m.confirmCh != nil {
 				m.confirmCh <- false
 				m.confirming = false
@@ -326,6 +343,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "enter":
+			if m.questioning && m.questionCh != nil {
+				if m.questionSel >= 0 && m.questionSel < len(m.questionOpts) {
+					m.questionCh <- m.questionOpts[m.questionSel]
+				}
+				m.questioning = false
+				m.questionCh = nil
+				return m, nil
+			}
 			if m.confirming && m.confirmCh != nil {
 				m.confirmCh <- true
 				m.confirming = false
@@ -341,9 +366,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textinput.Blur()
 			}
 			return m, nil
+		case "up":
+			if m.questioning && m.questionSel > 0 {
+				m.questionSel--
+			}
+			return m, nil
+		case "down":
+			if m.questioning && m.questionSel < len(m.questionOpts)-1 {
+				m.questionSel++
+			}
+			return m, nil
+		case "1", "2", "3", "4":
+			if m.questioning && m.questionCh != nil {
+				idx := int(s[0]-'0') - 1
+				if idx >= 0 && idx < len(m.questionOpts) {
+					m.questionCh <- m.questionOpts[idx]
+					m.questioning = false
+					m.questionCh = nil
+				}
+				return m, nil
+			}
 		case "esc":
 			// Esc = "stop everything, give me back control"
 			// Works in all agent states, matching Claude Code behavior.
+			if m.questioning && m.questionCh != nil {
+				close(m.questionCh)
+				m.questioning = false
+				m.questionCh = nil
+				m.appendLine(systemStyle.Render("  [cancelled]"))
+				return m, nil
+			}
 			if m.confirming && m.confirmCh != nil {
 				// During confirmation: deny and stop the loop.
 				m.confirmCh <- false
@@ -486,6 +538,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinnerKind = spinnerNone
 		m.appendLine(m.renderConfirmBlock(msg.name, msg.params, msg.level))
 
+	case questionMsg:
+		m.questioning = true
+		m.questionCh = msg.replyCh
+		m.questionOpts = msg.options
+		m.questionSel = 0
+		m.spinnerKind = spinnerNone
+		m.appendLine(m.renderQuestionBlock(msg.question, msg.options))
+
 	case systemMsg:
 		m.appendLine(systemStyle.Render(msg.text))
 
@@ -540,7 +600,13 @@ func (m Model) View() string {
 
 	// Input line
 	var input string
-	if m.confirming {
+	if m.questioning {
+		sel := ""
+		if m.questionSel >= 0 && m.questionSel < len(m.questionOpts) {
+			sel = fmt.Sprintf(" [%d. %s]", m.questionSel+1, m.questionOpts[m.questionSel])
+		}
+		input = confirmHintStyle.Render("↑↓ select  1-4 pick  enter confirm  esc cancel" + sel)
+	} else if m.confirming {
 		if m.confirmLevel >= tools.PermissionDangerous {
 			input = confirmDangerHintStyle.Render("⚠ dangerous  enter accept  esc deny")
 		} else {
@@ -624,6 +690,17 @@ func (m *Model) renderConfirmBlock(name, params string, level tools.PermissionLe
 	}
 
 	return border.Render(strings.Join(lines, "\n"))
+}
+
+// renderQuestionBlock renders a question with numbered options.
+func (m *Model) renderQuestionBlock(question string, options []string) string {
+	var lines []string
+	lines = append(lines, toolNameStyle.Render("? "+question))
+	for i, opt := range options {
+		prefix := fmt.Sprintf("  %d. ", i+1)
+		lines = append(lines, toolParamStyle.Render(prefix+opt))
+	}
+	return confirmBorderStyle.Render(strings.Join(lines, "\n"))
 }
 
 // renderContent returns the viewport content, appending dynamic elements

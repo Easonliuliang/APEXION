@@ -86,6 +86,7 @@ func DefaultRegistry(webCfg *WebToolsConfig) *Registry {
 	r.Register(&GitDiffTool{})
 	r.Register(&GitCommitTool{})
 	r.Register(&GitPushTool{})
+	r.Register(&QuestionTool{})
 	r.Register(&TaskTool{})
 	r.Register(&TodoWriteTool{})
 	r.Register(&TodoReadTool{})

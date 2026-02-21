@@ -17,8 +17,9 @@ func TestDefaultRegistry_AllToolsRegistered(t *testing.T) {
 	r := DefaultRegistry(nil)
 	expected := []string{
 		"bash", "edit_file", "git_commit", "git_diff", "git_push",
-		"git_status", "glob", "grep", "list_dir", "read_file",
-		"task", "todo_read", "todo_write", "web_fetch", "web_search", "write_file",
+		"git_status", "glob", "grep", "list_dir", "question",
+		"read_file", "task", "todo_read", "todo_write",
+		"web_fetch", "web_search", "write_file",
 	}
 	all := r.All()
 	if len(all) != len(expected) {

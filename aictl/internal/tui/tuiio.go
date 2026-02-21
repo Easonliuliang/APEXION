@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 
@@ -79,6 +80,22 @@ func (t *TuiIO) Error(msg string) {
 
 func (t *TuiIO) SetTokens(n int) {
 	t.program.Send(tokensMsg{n: n})
+}
+
+// --- Questioner implementation ---
+
+func (t *TuiIO) AskQuestion(question string, options []string) (string, error) {
+	replyCh := make(chan string, 1)
+	t.program.Send(questionMsg{
+		question: question,
+		options:  options,
+		replyCh:  replyCh,
+	})
+	answer, ok := <-replyCh
+	if !ok {
+		return "", fmt.Errorf("cancelled")
+	}
+	return answer, nil
 }
 
 // --- SubAgentReporter ---

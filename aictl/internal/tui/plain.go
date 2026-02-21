@@ -91,6 +91,28 @@ func (p *PlainIO) SetTokens(n int) {
 	p.tokens = n
 }
 
+func (p *PlainIO) AskQuestion(question string, options []string) (string, error) {
+	fmt.Printf("\n? %s\n", question)
+	for i, opt := range options {
+		fmt.Printf("  %d. %s\n", i+1, opt)
+	}
+	fmt.Print("Enter number (or type custom answer): ")
+	var answer string
+	fmt.Scanln(&answer)
+	answer = strings.TrimSpace(answer)
+	// If user typed a number, map to option.
+	if len(answer) == 1 && answer[0] >= '1' && answer[0] <= '9' {
+		idx := int(answer[0]-'0') - 1
+		if idx >= 0 && idx < len(options) {
+			return options[idx], nil
+		}
+	}
+	if answer == "" {
+		return "", fmt.Errorf("cancelled")
+	}
+	return answer, nil
+}
+
 // truncate shortens s to maxLen characters, appending "..." if cut.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {

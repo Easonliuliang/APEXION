@@ -51,6 +51,15 @@ func NewExecutor(registry *Registry, policy permission.Policy) *Executor {
 // circular dependencies between agent, tui, and tools packages).
 func (e *Executor) SetConfirmer(c Confirmer) {
 	e.confirmer = c
+
+	// Also wire Questioner if the confirmer implements it.
+	if q, ok := c.(Questioner); ok {
+		if qt, ok := e.registry.Get("question"); ok {
+			if qTool, ok := qt.(*QuestionTool); ok {
+				qTool.SetQuestioner(q)
+			}
+		}
+	}
 }
 
 // SetToolCanceller injects the UI-layer cancel bridge so that Esc can

@@ -8,7 +8,6 @@ import (
 	"github.com/aictl/aictl/internal/tools"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -176,20 +175,21 @@ var (
 
 // ---------- Model ----------
 
-const statusBarHeight = 1
-const inputHeight = 1
-
 // Model is the bubbletea model managing the full TUI state.
+//
+// Rendering strategy (inline mode, no alt-screen):
+//   - Completed content is pushed to terminal scrollback via tea.Println().
+//   - View() only renders the "live" area: current streaming text, running
+//     tool block, input line, and status bar.
+//   - The terminal natively handles scrollback and mouse selection.
 type Model struct {
-	viewport     viewport.Model
 	textinput    textinput.Model
 	spinner      spinner.Model
 	width        int
 	height       int
-	content     *strings.Builder // pointer to avoid copy panic in bubbletea
-	streaming   bool             // LLM text deltas are arriving
-	streamStart int              // byte offset in content where current stream began
-	inputMode   bool             // text input is active (waiting for user)
+	liveContent  strings.Builder // only the current streaming LLM text
+	streaming    bool            // LLM text deltas are arriving
+	inputMode    bool            // text input is active (waiting for user)
 	spinnerKind spinnerKind      // what the spinner is showing for
 
 	currentTool          *toolCallState // in-flight tool call (nil when idle)
@@ -235,27 +235,16 @@ func NewModel(inputCh chan inputResult, cfg TUIConfig) Model {
 	ti.Prompt = "❯ "
 	ti.CharLimit = 4096
 
-	vp := viewport.New(80, 24)
-
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = spinnerStyle
 
-	m := Model{
-		viewport:     vp,
-		textinput:    ti,
-		spinner:      sp,
-		content:      &strings.Builder{},
-		inputCh:      inputCh,
-		cfg:          cfg,
+	return Model{
+		textinput: ti,
+		spinner:   sp,
+		inputCh:   inputCh,
+		cfg:       cfg,
 	}
-
-	if cfg.ShowWelcome {
-		m.content.WriteString(renderWelcome(cfg))
-		m.content.WriteString("\n")
-	}
-
-	return m
 }
 
 func toolTickCmd() tea.Cmd {
@@ -263,7 +252,11 @@ func toolTickCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.spinner.Tick)
+	cmds := []tea.Cmd{textinput.Blink, m.spinner.Tick}
+	if m.cfg.ShowWelcome {
+		cmds = append(cmds, tea.Println(renderWelcome(m.cfg)))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -274,46 +267,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Reserve 3 lines: 1 input + 1 separator + 1 status bar.
-		vpHeight := m.height - 3
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-		m.viewport.Width = m.width
-		m.viewport.Height = vpHeight
 		m.textinput.Width = m.width - 4 // account for prompt
-		m.viewport.SetContent(m.renderContent())
-		m.viewport.GotoBottom()
 
 	case spinner.TickMsg:
-		wasAtBottom := m.viewport.AtBottom()
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		if m.spinnerKind != spinnerNone {
-			m.viewport.SetContent(m.renderContent())
-			if wasAtBottom {
-				m.viewport.GotoBottom()
-			}
-		}
 		cmds = append(cmds, cmd)
 
 	case tea.KeyMsg:
 		// Filter out terminal escape sequences leaking as key events.
-		// Terminal responses can be fragmented across multiple KeyMsgs;
-		// after detecting noise, drop a few subsequent single-char events
-		// that are likely trailing fragments (e.g. ESC is caught, but
-		// the following '\', '[', '?' leak as separate keys).
 		s := msg.String()
 		if isTerminalNoiseKey(s) {
 			m.noiseDropCount = 4
 			return m, nil
 		}
-		if s == "esc" {
-			// Bare ESC in input mode is likely the start of a split sequence.
-			if m.inputMode {
-				m.noiseDropCount = 4
-				return m, nil
-			}
+		if s == "esc" && m.inputMode {
+			m.noiseDropCount = 4
+			return m, nil
 		}
 		if m.noiseDropCount > 0 && len(s) <= 2 {
 			m.noiseDropCount--
@@ -325,15 +295,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				close(m.questionCh)
 				m.questioning = false
 				m.questionCh = nil
-				m.appendLine(systemStyle.Render("  [cancelled]"))
-				return m, nil
+				cmds = append(cmds, tea.Println(systemStyle.Render("  [cancelled]")))
+				return m, tea.Batch(cmds...)
 			}
 			if m.confirming && m.confirmCh != nil {
 				m.confirmCh <- false
 				m.confirming = false
 				m.confirmCh = nil
-				m.appendLine(systemStyle.Render("  [cancelled]"))
-				return m, nil
+				cmds = append(cmds, tea.Println(systemStyle.Render("  [cancelled]")))
+				return m, tea.Batch(cmds...)
 			}
 			if m.inputMode {
 				m.inputCh <- inputResult{err: fmt.Errorf("interrupted")}
@@ -355,7 +325,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmCh <- true
 				m.confirming = false
 				m.confirmCh = nil
-				m.currentToolConfirmed = true // tool block already shown, skip re-render
+				m.currentToolConfirmed = true
 				return m, nil
 			}
 			if m.inputMode {
@@ -387,62 +357,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "esc":
-			// Esc = "stop everything, give me back control"
-			// Works in all agent states, matching Claude Code behavior.
 			if m.questioning && m.questionCh != nil {
 				close(m.questionCh)
 				m.questioning = false
 				m.questionCh = nil
-				m.appendLine(systemStyle.Render("  [cancelled]"))
-				return m, nil
+				cmds = append(cmds, tea.Println(systemStyle.Render("  [cancelled]")))
+				return m, tea.Batch(cmds...)
 			}
 			if m.confirming && m.confirmCh != nil {
-				// During confirmation: deny and stop the loop.
 				m.confirmCh <- false
 				m.confirming = false
 				m.confirmCh = nil
-				m.appendLine(toolErrorStyle.Render("  ✗ denied"))
-				return m, nil
+				cmds = append(cmds, tea.Println(toolErrorStyle.Render("  ✗ denied")))
+				return m, tea.Batch(cmds...)
 			}
 			if m.toolName != "" && m.cancelToolFn != nil {
-				// During tool execution: cancel the tool.
-				// The executor will set UserCancelled=true,
-				// which causes the loop to stop.
 				m.cancelToolFn()
 				return m, nil
 			}
 			if (m.spinnerKind == spinnerThinking || m.streaming) && m.cancelLoopFn != nil {
-				// During LLM streaming/thinking: cancel the loop context.
-				// This aborts the stream and returns to user input.
 				m.cancelLoopFn()
 				m.spinnerKind = spinnerNone
 				m.streaming = false
+				m.liveContent.Reset()
 				return m, nil
 			}
-
-		// --- Keyboard scrolling (no mouse capture, like opencode) ---
-		case "pgup":
-			m.viewport.ViewUp()
-			return m, nil
-		case "pgdown":
-			m.viewport.ViewDown()
-			return m, nil
-		case "shift+up":
-			m.viewport.LineUp(3)
-			return m, nil
-		case "shift+down":
-			m.viewport.LineDown(3)
-			return m, nil
-		case "home":
-			m.viewport.GotoTop()
-			return m, nil
-		case "end":
-			m.viewport.GotoBottom()
-			return m, nil
-			}
+		}
 
 		if m.inputMode && !m.confirming {
-			// Block escape sequences and control chars from reaching textinput
 			if isControlKeyMsg(msg.String()) {
 				return m, nil
 			}
@@ -459,7 +401,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, textinput.Blink)
 
 	case userMsg:
-		m.appendLine(userStyle.Render("You: " + msg.text))
+		cmds = append(cmds, tea.Println(userStyle.Render("You: "+msg.text)))
 
 	case thinkingStartMsg:
 		m.spinnerKind = spinnerThinking
@@ -469,27 +411,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.spinnerKind == spinnerThinking {
 			m.spinnerKind = spinnerNone
 		}
-		if !m.streaming {
-			// Record where this response starts so TextDone can replace it
-			m.streamStart = m.content.Len()
-			m.streaming = true
-		}
-		m.appendText(msg.delta)
+		m.streaming = true
+		m.liveContent.WriteString(msg.delta)
 
 	case textDoneMsg:
 		m.spinnerKind = spinnerNone
-		if m.streaming {
-			m.replaceStreamWithMarkdown(msg.fullText)
-		}
 		m.streaming = false
+		rendered := m.renderMarkdown(msg.fullText)
+		m.liveContent.Reset()
+		cmds = append(cmds, tea.Println(rendered))
 
 	case toolTickMsg:
 		if m.toolName != "" {
-			wasAtBottom := m.viewport.AtBottom()
-			m.viewport.SetContent(m.renderContent())
-			if wasAtBottom {
-				m.viewport.GotoBottom()
-			}
 			cmds = append(cmds, toolTickCmd())
 		}
 		return m, tea.Batch(cmds...)
@@ -509,16 +442,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolDoneMsg:
 		if m.currentTool != nil {
+			var line string
 			if m.currentToolConfirmed {
 				if msg.isErr {
-					m.appendLine(toolErrorStyle.Render("  ✗ " + truncateStr(msg.result, 200)))
+					line = toolErrorStyle.Render("  ✗ " + truncateStr(msg.result, 200))
 				} else {
 					summary := truncateStr(strings.ReplaceAll(msg.result, "\n", " "), 120)
-					m.appendLine(toolSuccessStyle.Render("  ✓ " + summary))
+					line = toolSuccessStyle.Render("  ✓ " + summary)
 				}
 			} else {
-				m.appendLine(m.renderToolDone(m.currentTool, msg.result, msg.isErr))
+				line = m.renderToolDone(m.currentTool, msg.result, msg.isErr)
 			}
+			cmds = append(cmds, tea.Println(line))
 		}
 		m.toolName = ""
 		m.toolStartTime = time.Time{}
@@ -536,7 +471,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.confirmCh = msg.replyCh
 		m.confirmLevel = msg.level
 		m.spinnerKind = spinnerNone
-		m.appendLine(m.renderConfirmBlock(msg.name, msg.params, msg.level))
+		cmds = append(cmds, tea.Println(m.renderConfirmBlock(msg.name, msg.params, msg.level)))
 
 	case questionMsg:
 		m.questioning = true
@@ -544,13 +479,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.questionOpts = msg.options
 		m.questionSel = 0
 		m.spinnerKind = spinnerNone
-		m.appendLine(m.renderQuestionBlock(msg.question, msg.options))
+		cmds = append(cmds, tea.Println(m.renderQuestionBlock(msg.question, msg.options)))
 
 	case systemMsg:
-		m.appendLine(systemStyle.Render(msg.text))
+		cmds = append(cmds, tea.Println(systemStyle.Render(msg.text)))
 
 	case errorMsg:
-		m.appendLine(errorStyle.Render("Error: " + msg.text))
+		cmds = append(cmds, tea.Println(errorStyle.Render("Error: "+msg.text)))
 
 	case tokensMsg:
 		m.tokens = msg.n
@@ -560,23 +495,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Update viewport content; only auto-scroll if user was already at bottom.
-	wasAtBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(m.renderContent())
-	switch msg.(type) {
-	case tea.KeyMsg, tea.MouseMsg:
-		// User interaction — don't force scroll to bottom.
-	default:
-		// Agent output — only follow stream if user hasn't scrolled up.
-		if wasAtBottom {
-			m.viewport.GotoBottom()
-		}
-	}
-
-	var vpCmd tea.Cmd
-	m.viewport, vpCmd = m.viewport.Update(msg)
-	cmds = append(cmds, vpCmd)
-
 	return m, tea.Batch(cmds...)
 }
 
@@ -585,20 +503,22 @@ func (m Model) View() string {
 		return ""
 	}
 
-	// Status bar: model │ tokens: N │ tool: name
-	modelName := m.cfg.Model
-	if modelName == "" {
-		modelName = "unknown"
+	// === Live area (content that is currently changing) ===
+	var live string
+	switch m.spinnerKind {
+	case spinnerThinking:
+		live = m.spinner.View() + " Thinking..."
+	case spinnerTool:
+		if m.currentTool != nil {
+			live = m.renderToolRunning(m.currentTool)
+		}
+	default:
+		if m.streaming {
+			live = m.liveContent.String()
+		}
 	}
-	status := statusModelStyle.Render(" "+modelName) + statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
-	if m.toolName != "" {
-		elapsed := int(time.Since(m.toolStartTime).Seconds())
-		status += statusBarStyle.Render(fmt.Sprintf(" │ tool: %s (%ds)", m.toolName, elapsed))
-	}
-	bar := separatorStyle.Width(m.width).Render(strings.Repeat("─", m.width)) + "\n" +
-		statusBarBgStyle.Width(m.width).Render(status)
 
-	// Input line
+	// === Input line ===
 	var input string
 	if m.questioning {
 		sel := ""
@@ -615,25 +535,19 @@ func (m Model) View() string {
 	} else if m.inputMode {
 		input = m.textinput.View()
 	} else {
-		// Agent is working — show dimmed prompt so screen doesn't look dead.
 		input = systemStyle.Render("❯")
 	}
 
-	// Build layout: content + input tight, then gap, then status bar at bottom.
-	// When content is short, input sits right below content (no gap in between).
-	// When content overflows, viewport handles scrolling.
-	rawContent := m.renderContent()
-	contentHeight := lipgloss.Height(rawContent)
-	// Fixed bottom block: 1 (input) + 2 (separator + statusbar) = 3 lines
-	const bottomBlock = 3
-	if contentHeight+bottomBlock <= m.height {
-		// Content fits: content → input → bar packed at top, blank fills bottom.
-		blank := strings.Repeat("\n", m.height-contentHeight-bottomBlock)
-		return rawContent + "\n" + input + "\n" + bar + blank
-	}
+	// === Status bar ===
+	bar := m.renderStatusBar()
 
-	// Content overflows: use viewport for scrolling.
-	return m.viewport.View() + "\n" + input + "\n" + bar
+	// Combine: live content (if any) + input + status bar
+	var parts []string
+	if live != "" {
+		parts = append(parts, live)
+	}
+	parts = append(parts, input, bar)
+	return strings.Join(parts, "\n")
 }
 
 // ---------- tool call rendering ----------
@@ -703,21 +617,19 @@ func (m *Model) renderQuestionBlock(question string, options []string) string {
 	return confirmBorderStyle.Render(strings.Join(lines, "\n"))
 }
 
-// renderContent returns the viewport content, appending dynamic elements
-// (spinner, in-flight tool block) that are not persisted in the content builder.
-func (m *Model) renderContent() string {
-	base := m.content.String()
-	switch m.spinnerKind {
-	case spinnerThinking:
-		return base + "\n" + m.spinner.View() + " Thinking..."
-	case spinnerTool:
-		if m.currentTool != nil {
-			return base + "\n" + m.renderToolRunning(m.currentTool)
-		}
-		return base + "\n" + m.spinner.View() + " " + m.toolName + "..."
-	default:
-		return base
+// renderStatusBar renders the bottom status bar (separator + model/tokens/tool info).
+func (m *Model) renderStatusBar() string {
+	modelName := m.cfg.Model
+	if modelName == "" {
+		modelName = "unknown"
 	}
+	status := statusModelStyle.Render(" "+modelName) + statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
+	if m.toolName != "" {
+		elapsed := int(time.Since(m.toolStartTime).Seconds())
+		status += statusBarStyle.Render(fmt.Sprintf(" │ tool: %s (%ds)", m.toolName, elapsed))
+	}
+	return separatorStyle.Width(m.width).Render(strings.Repeat("─", m.width)) + "\n" +
+		statusBarBgStyle.Width(m.width).Render(status)
 }
 
 // ---------- markdown rendering ----------
@@ -746,33 +658,17 @@ func (m *Model) getMarkdownRenderer() *glamour.TermRenderer {
 	return r
 }
 
-// replaceStreamWithMarkdown replaces the raw streamed text (from streamStart
-// to end of content) with glamour-rendered markdown.
-func (m *Model) replaceStreamWithMarkdown(fullText string) {
+// renderMarkdown renders text with glamour and trims trailing whitespace.
+func (m *Model) renderMarkdown(text string) string {
 	r := m.getMarkdownRenderer()
 	if r == nil {
-		s := m.content.String()
-		if len(s) > 0 && s[len(s)-1] != '\n' {
-			m.content.WriteString("\n")
-		}
-		return
+		return text
 	}
-
-	rendered, err := r.Render(fullText)
+	rendered, err := r.Render(text)
 	if err != nil {
-		s := m.content.String()
-		if len(s) > 0 && s[len(s)-1] != '\n' {
-			m.content.WriteString("\n")
-		}
-		return
+		return text
 	}
-
-	// Replace: keep everything before streamStart, append rendered text
-	before := m.content.String()[:m.streamStart]
-	m.content.Reset()
-	m.content.WriteString(before)
-	m.content.WriteString(strings.TrimRight(rendered, "\n"))
-	m.content.WriteString("\n")
+	return strings.TrimRight(rendered, "\n")
 }
 
 // ---------- welcome page ----------
@@ -833,15 +729,6 @@ func renderWelcome(cfg TUIConfig) string {
 }
 
 // ---------- helpers ----------
-
-func (m *Model) appendLine(text string) {
-	m.content.WriteString(text)
-	m.content.WriteString("\n")
-}
-
-func (m *Model) appendText(text string) {
-	m.content.WriteString(text)
-}
 
 // formatToolParams extracts a compact display string from raw JSON params.
 func formatToolParams(raw string) string {

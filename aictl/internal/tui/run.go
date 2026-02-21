@@ -21,7 +21,7 @@ func RunTUI(cfg TUIConfig, agentFn func(io IO) error) error {
 	model.cancelToolFn = tuiIO.CancelRunningTool
 	model.cancelLoopFn = tuiIO.CancelLoop
 
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	tuiIO.program = p
 
 	var (

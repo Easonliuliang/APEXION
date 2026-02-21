@@ -85,15 +85,17 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (ToolRes
 	return ToolResult{Content: result}, nil
 }
 
-// shellBin returns the path to the system shell.
+// shellBin returns the user's preferred shell, falling back to bash then sh.
+// Using $SHELL (typically zsh on macOS) instead of /bin/sh ensures consistent
+// behavior with the user's terminal (e.g. echo -e works in zsh but not POSIX sh).
 func shellBin() string {
-	if p, err := exec.LookPath("sh"); err == nil {
-		return p
-	}
-	for _, candidate := range []string{"/bin/sh", "/usr/bin/sh"} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+	if s := os.Getenv("SHELL"); s != "" {
+		if _, err := os.Stat(s); err == nil {
+			return s
 		}
+	}
+	if p, err := exec.LookPath("bash"); err == nil {
+		return p
 	}
 	return "sh"
 }

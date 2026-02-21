@@ -187,7 +187,7 @@ type Model struct {
 	spinner      spinner.Model
 	width        int
 	height       int
-	liveContent  strings.Builder // only the current streaming LLM text
+	liveContent  *strings.Builder // pointer: avoids panic when bubbletea copies Model by value
 	streaming    bool            // LLM text deltas are arriving
 	inputMode    bool            // text input is active (waiting for user)
 	spinnerKind spinnerKind      // what the spinner is showing for
@@ -240,10 +240,11 @@ func NewModel(inputCh chan inputResult, cfg TUIConfig) Model {
 	sp.Style = spinnerStyle
 
 	return Model{
-		textinput: ti,
-		spinner:   sp,
-		inputCh:   inputCh,
-		cfg:       cfg,
+		textinput:   ti,
+		spinner:     sp,
+		liveContent: &strings.Builder{},
+		inputCh:     inputCh,
+		cfg:         cfg,
 	}
 }
 
@@ -252,7 +253,11 @@ func toolTickCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, m.spinner.Tick}
+	// NOTE: Do NOT start textinput.Blink here. Blink fires every ~530ms,
+	// causing Update→View→repaint cycles that make the terminal auto-scroll
+	// to the bottom, preventing native scrollback from working.
+	// The textinput cursor will be static but scrollback works.
+	var cmds []tea.Cmd
 	if m.cfg.ShowWelcome {
 		cmds = append(cmds, tea.Println(renderWelcome(m.cfg)))
 	}
@@ -270,9 +275,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textinput.Width = m.width - 4 // account for prompt
 
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
+		if m.spinnerKind != spinnerNone {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 
 	case tea.KeyMsg:
 		// Filter out terminal escape sequences leaking as key events.
@@ -398,7 +405,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case readInputMsg:
 		m.inputMode = true
 		m.textinput.Focus()
-		cmds = append(cmds, textinput.Blink)
+		// No textinput.Blink — static cursor keeps idle redraws at zero,
+		// allowing native terminal scrollback to work.
 
 	case userMsg:
 		cmds = append(cmds, tea.Println(userStyle.Render("You: "+msg.text)))
@@ -406,6 +414,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case thinkingStartMsg:
 		m.spinnerKind = spinnerThinking
 		m.streaming = false
+		cmds = append(cmds, m.spinner.Tick)
 
 	case textDeltaMsg:
 		if m.spinnerKind == spinnerThinking {
@@ -438,7 +447,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name:   msg.name,
 			params: formatToolParams(msg.params),
 		}
-		cmds = append(cmds, toolTickCmd())
+		cmds = append(cmds, toolTickCmd(), m.spinner.Tick)
 
 	case toolDoneMsg:
 		if m.currentTool != nil {

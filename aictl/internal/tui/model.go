@@ -586,13 +586,57 @@ func (m *Model) renderToolRunning(tc *toolCallState) string {
 
 // renderToolDone renders a completed tool call (printed to scrollback).
 //
-//	⏺ Read(…/main.go)  1.2s
-//	  ⎿  Read 42 lines
+// Simple tools (read, list, glob, grep, write, edit) → 1 line:
+//
+//	⏺ Read(…/main.go)  Read 42 lines  0.3s
+//
+// Complex tools (bash, git, mcp…) / errors → 2 lines:
+//
+//	⏺ Bash(git status)  0.8s
+//	  ⎿  output…
 func (m *Model) renderToolDone(tc *toolCallState, result string, isErr bool, elapsed time.Duration) string {
 	header := toolHeader(tc.name, tc.params, false)
-	hint := hintStyle.Render("  " + formatElapsed(elapsed))
+	elapsedStr := hintStyle.Render("  " + formatElapsed(elapsed))
+
+	// Simple tools: collapse to 1 line
+	if !isErr {
+		if summary := toolInlineSummary(tc.name, result); summary != "" {
+			return header + "  " + summary + elapsedStr
+		}
+	}
+
+	// Complex / error: 2-line format
 	resultBlock := renderResultBlock(tc.name, result, isErr)
-	return header + hint + "\n" + resultBlock
+	return header + elapsedStr + "\n" + resultBlock
+}
+
+// toolInlineSummary returns a short inline summary for simple tools.
+// Returns "" for complex tools that need a full result block.
+func toolInlineSummary(name, result string) string {
+	switch name {
+	case "read_file":
+		n := countNonEmptyContent(result)
+		return toolParamStyle.Render(fmt.Sprintf("Read %d %s", n, pluralLine(n)))
+	case "write_file":
+		return toolSuccessStyle.Render(firstLine(result))
+	case "edit_file":
+		return toolSuccessStyle.Render(firstLine(result))
+	case "glob":
+		n := countNonEmptyLines(result)
+		return toolParamStyle.Render(fmt.Sprintf("Found %d %s", n, pluralFile(n)))
+	case "grep":
+		n := countNonEmptyLines(result)
+		return toolParamStyle.Render(fmt.Sprintf("Found %d %s", n, pluralMatch(n)))
+	case "list_dir":
+		n := countNonEmptyLines(result)
+		return toolParamStyle.Render(fmt.Sprintf("Listed %d %s", n, pluralEntry(n)))
+	case "todo_write", "todo_read":
+		if result == "" {
+			return hintStyle.Render("(empty)")
+		}
+		return toolParamStyle.Render(firstLine(result))
+	}
+	return ""
 }
 
 // renderConfirmBlock renders the permission dialog as a rounded-border box.

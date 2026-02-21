@@ -78,23 +78,12 @@ func runOnce(prompt string) error {
 			ShowWelcome: false, // run mode: no welcome page
 		}
 
-		return tui.RunTUI(tuiCfg, func(ui tui.IO) error {
+		return tui.RunTUI(tuiCfg, func(ui tui.IO, ctx context.Context) error {
 			executor.SetConfirmer(ui)
 			if tc, ok := ui.(tools.ToolCanceller); ok {
 				executor.SetToolCanceller(tc)
 			}
 			a := agent.New(p, executor, cfg, ui, store)
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			go func() {
-				<-sigCh
-				cancel()
-			}()
-
 			return a.RunOnce(ctx, prompt)
 		})
 	}

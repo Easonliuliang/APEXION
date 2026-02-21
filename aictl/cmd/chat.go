@@ -97,7 +97,8 @@ func runChat() error {
 			ShowWelcome: true,
 		}
 
-		return tui.RunTUI(tuiCfg, func(ui tui.IO) error {
+		// ctx is managed by RunTUI: cancelled on Ctrl+C, TUI exit, or OS signal.
+		return tui.RunTUI(tuiCfg, func(ui tui.IO, ctx context.Context) error {
 			executor.SetConfirmer(ui)
 			if tc, ok := ui.(tools.ToolCanceller); ok {
 				executor.SetToolCanceller(tc)
@@ -108,17 +109,6 @@ func runChat() error {
 			if mcpMgr != nil {
 				a.SetMCPManager(mcpMgr)
 			}
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			go func() {
-				<-sigCh
-				cancel()
-			}()
-
 			return a.Run(ctx)
 		})
 	}

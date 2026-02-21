@@ -487,4 +487,91 @@ func TestNewTokenBudget(t *testing.T) {
 	if b.CompactThreshold() != 160000 {
 		t.Errorf("expected compact threshold 160000, got %d", b.CompactThreshold())
 	}
+	if b.GentleThreshold() != 140000 {
+		t.Errorf("expected gentle threshold 140000, got %d", b.GentleThreshold())
+	}
+}
+
+// --- MaskOldToolOutputs tests ---
+
+func TestMaskOldToolOutputs_MasksOldKeepsRecent(t *testing.T) {
+	msgs := []provider.Message{
+		userText("q1"),
+		assistantWithToolUse("", "t1", "read_file"),
+		toolResult("t1", "old content 1 that should be masked"),
+		assistantText("ok"),
+		userText("q2"),
+		assistantWithToolUse("", "t2", "read_file"),
+		toolResult("t2", "old content 2 that should be masked"),
+		assistantText("ok"),
+		userText("q3"),
+		assistantWithToolUse("", "t3", "read_file"),
+		toolResult("t3", "recent content that should stay"),
+		assistantText("done"),
+	}
+
+	result := MaskOldToolOutputs(msgs, 1)
+
+	// First two tool results should be masked.
+	masked := 0
+	kept := 0
+	for _, msg := range result {
+		for _, c := range msg.Content {
+			if c.Type != provider.ContentTypeToolResult {
+				continue
+			}
+			if strings.Contains(c.ToolResult, "[Output omitted:") {
+				masked++
+			} else {
+				kept++
+			}
+		}
+	}
+
+	if masked != 2 {
+		t.Errorf("expected 2 masked tool results, got %d", masked)
+	}
+	if kept != 1 {
+		t.Errorf("expected 1 kept tool result, got %d", kept)
+	}
+}
+
+func TestMaskOldToolOutputs_NothingToMask(t *testing.T) {
+	msgs := []provider.Message{
+		userText("q1"),
+		assistantWithToolUse("", "t1", "read_file"),
+		toolResult("t1", "content"),
+		assistantText("done"),
+	}
+
+	result := MaskOldToolOutputs(msgs, 5)
+
+	// With keepRecent > total, nothing should be masked.
+	for _, msg := range result {
+		for _, c := range msg.Content {
+			if c.Type == provider.ContentTypeToolResult && strings.Contains(c.ToolResult, "[Output omitted:") {
+				t.Error("no tool results should be masked")
+			}
+		}
+	}
+}
+
+func TestMaskOldToolOutputs_DoesNotMutateOriginal(t *testing.T) {
+	msgs := []provider.Message{
+		userText("q"),
+		assistantWithToolUse("", "t1", "read_file"),
+		toolResult("t1", "original content"),
+		assistantText("ok"),
+		userText("q2"),
+		assistantWithToolUse("", "t2", "read_file"),
+		toolResult("t2", "keep this"),
+		assistantText("done"),
+	}
+
+	original := msgs[2].Content[0].ToolResult
+	_ = MaskOldToolOutputs(msgs, 1)
+
+	if msgs[2].Content[0].ToolResult != original {
+		t.Error("MaskOldToolOutputs should not mutate the original messages")
+	}
 }

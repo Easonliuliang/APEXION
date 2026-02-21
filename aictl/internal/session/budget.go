@@ -22,8 +22,14 @@ func NewTokenBudget(contextWindow, systemPromptTokens int) *TokenBudget {
 	}
 }
 
-// CompactThreshold returns the prompt token count at which compaction should trigger.
-// Set at 80% of ContextWindow.
+// GentleThreshold returns the token count at which gentle compaction (tool output masking)
+// should trigger. Set at 70% of ContextWindow.
+func (b *TokenBudget) GentleThreshold() int {
+	return b.ContextWindow * 70 / 100
+}
+
+// CompactThreshold returns the prompt token count at which full compaction
+// (summarization + truncation) should trigger. Set at 80% of ContextWindow.
 func (b *TokenBudget) CompactThreshold() int {
 	return b.ContextWindow * 80 / 100
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/aictl/aictl/internal/permission"
@@ -36,6 +37,7 @@ type Executor struct {
 	policy         permission.Policy
 	defaultTimeout time.Duration
 	toolCanceller  ToolCanceller
+	tracker        *FileTracker
 }
 
 // NewExecutor 创建工具执行器
@@ -44,7 +46,13 @@ func NewExecutor(registry *Registry, policy permission.Policy) *Executor {
 		registry:       registry,
 		policy:         policy,
 		defaultTimeout: 300 * time.Second,
+		tracker:        NewFileTracker(),
 	}
+}
+
+// FileTracker returns the executor's file change tracker.
+func (e *Executor) FileTracker() *FileTracker {
+	return e.tracker
 }
 
 // SetConfirmer injects the UI-layer confirmer (called after New to avoid
@@ -124,6 +132,19 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		defer e.toolCanceller.ClearToolCancel()
 	}
 
+	// For write_file, check existence before execution to distinguish create vs modify.
+	isNewFile := false
+	if name == "write_file" {
+		var p struct {
+			FilePath string `json:"file_path"`
+		}
+		if json.Unmarshal(params, &p) == nil && p.FilePath != "" {
+			if _, err := os.Stat(p.FilePath); os.IsNotExist(err) {
+				isNewFile = true
+			}
+		}
+	}
+
 	result, err := tool.Execute(ctx, params)
 	if err != nil {
 		if ctx.Err() == context.Canceled {
@@ -135,6 +156,11 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 			}
 		}
 		return ToolResult{Content: fmt.Sprintf("error: %v", err), IsError: true}
+	}
+
+	// Track file changes on successful write operations.
+	if !result.IsError {
+		trackFileChange(e.tracker, name, params, isNewFile)
 	}
 
 	limit := toolOutputLimit(name)

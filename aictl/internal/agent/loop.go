@@ -48,15 +48,8 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 			return nil
 		}
 
-		// Auto-compact if summarizer is available and threshold exceeded.
-		if a.shouldCompact(budget) && a.summarizer != nil {
-			summary, err := a.summarizer.Summarize(turnCtx, a.session.Summary, a.session.Messages)
-			if err == nil {
-				a.session.Summary = summary
-				a.session.Messages = session.TruncateSession(a.session.Messages, 10)
-				a.io.SystemMessage("Context compacted.")
-			}
-		}
+		// Two-stage auto-compaction.
+		a.maybeCompact(turnCtx, budget)
 
 		// Generate compacted copy for sending (does not modify session).
 		compacted := session.CompactHistory(a.session.Messages, budget.HistoryMax, a.session.Summary)
@@ -255,15 +248,54 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 	return results, false
 }
 
-// shouldCompact returns true when the context is large enough to warrant compaction.
-func (a *Agent) shouldCompact(budget *session.TokenBudget) bool {
-	// Use actual API-reported prompt tokens if available.
-	if a.session.PromptTokens > 0 {
-		return a.session.PromptTokens >= budget.CompactThreshold()
+// maybeCompact runs two-stage auto-compaction if context is growing large.
+//
+// Stage 1 (70% threshold): Mask old tool outputs — fast, no LLM call.
+// Stage 2 (80% threshold): Full summarization + truncation.
+func (a *Agent) maybeCompact(ctx context.Context, budget *session.TokenBudget) {
+	tokens := a.currentTokens(budget)
+
+	// Stage 1: Gentle masking at 70%.
+	if tokens >= budget.GentleThreshold() && !a.session.GentleCompactDone {
+		before := tokens
+		a.session.Messages = session.MaskOldToolOutputs(a.session.Messages, 10)
+		a.session.GentleCompactDone = true
+		after := a.currentTokens(budget)
+		saved := before - after
+		if saved > 0 {
+			a.io.SystemMessage(fmt.Sprintf(
+				"Context growing large — masked old tool outputs (%dk → %dk tokens, saved %dk).",
+				before/1000, after/1000, saved/1000))
+		}
+		return // don't also do full compact in the same iteration
 	}
-	// Fallback to estimation.
-	estimated := a.session.EstimateTokens() + estimateTokens(a.systemPrompt)
-	return estimated >= budget.CompactThreshold()
+
+	// Stage 2: Full summarization at 80%.
+	if tokens >= budget.CompactThreshold() && a.summarizer != nil {
+		before := tokens
+		a.io.SystemMessage("Compacting context (summarizing conversation)...")
+		summary, err := a.summarizer.Summarize(ctx, a.session.Summary, a.session.Messages)
+		if err != nil {
+			a.io.Error("Compact failed: " + err.Error())
+			return
+		}
+		a.session.Summary = summary
+		a.session.Messages = session.TruncateSession(a.session.Messages, 10)
+		a.session.GentleCompactDone = false // reset for next cycle
+		after := a.currentTokens(budget)
+		a.io.SystemMessage(fmt.Sprintf(
+			"Context compacted: %dk → %dk tokens. %d messages retained.",
+			before/1000, after/1000, len(a.session.Messages)))
+	}
+}
+
+// currentTokens returns the current token usage estimate.
+func (a *Agent) currentTokens(budget *session.TokenBudget) int {
+	// Prefer actual API-reported tokens.
+	if a.session.PromptTokens > 0 {
+		return a.session.PromptTokens
+	}
+	return a.session.EstimateTokens() + estimateTokens(a.systemPrompt)
 }
 
 // estimateTokens returns a rough token estimate for a string (chars / 4).

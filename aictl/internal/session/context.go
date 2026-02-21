@@ -288,6 +288,84 @@ func cloneMessages(msgs []provider.Message) []provider.Message {
 	return result
 }
 
+// MaskOldToolOutputs replaces old tool_result content with compact placeholders.
+// Keeps the last keepRecent tool results intact.
+// Returns a new message slice; the original is not modified.
+func MaskOldToolOutputs(messages []provider.Message, keepRecent int) []provider.Message {
+	// Count total tool_result blocks.
+	var total int
+	for _, msg := range messages {
+		for _, c := range msg.Content {
+			if c.Type == provider.ContentTypeToolResult {
+				total++
+			}
+		}
+	}
+
+	maskBefore := total - keepRecent
+	if maskBefore <= 0 {
+		return messages // nothing to mask
+	}
+
+	// Single pass: copy messages, masking old tool results.
+	result := make([]provider.Message, 0, len(messages))
+	idx := 0
+	for _, msg := range messages {
+		// Check if any tool_result in this message needs masking.
+		needsMasking := false
+		for _, c := range msg.Content {
+			if c.Type == provider.ContentTypeToolResult && idx < maskBefore && len(c.ToolResult) > 0 {
+				needsMasking = true
+			}
+			if c.Type == provider.ContentTypeToolResult {
+				idx++
+			}
+		}
+
+		if !needsMasking {
+			result = append(result, msg)
+			continue
+		}
+
+		// Rewind idx to start of this message for the masking pass.
+		idx -= countToolResults(msg)
+
+		newMsg := provider.Message{
+			Role:    msg.Role,
+			Content: make([]provider.Content, len(msg.Content)),
+		}
+		for j, c := range msg.Content {
+			if c.Type == provider.ContentTypeToolResult && idx < maskBefore && len(c.ToolResult) > 0 {
+				newMsg.Content[j] = provider.Content{
+					Type:       c.Type,
+					ToolUseID:  c.ToolUseID,
+					ToolResult: fmt.Sprintf("[Output omitted: %d chars]", len(c.ToolResult)),
+					IsError:    c.IsError,
+				}
+			} else {
+				newMsg.Content[j] = c
+			}
+			if c.Type == provider.ContentTypeToolResult {
+				idx++
+			}
+		}
+		result = append(result, newMsg)
+	}
+
+	return result
+}
+
+// countToolResults counts tool_result blocks in a message.
+func countToolResults(msg provider.Message) int {
+	n := 0
+	for _, c := range msg.Content {
+		if c.Type == provider.ContentTypeToolResult {
+			n++
+		}
+	}
+	return n
+}
+
 func estimateMessagesTokens(messages []provider.Message) int {
 	total := 0
 	for _, msg := range messages {

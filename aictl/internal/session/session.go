@@ -18,6 +18,7 @@ type Session struct {
 	PromptTokens     int    // last API call's input tokens (for threshold checks)
 	CompletionTokens int    // last API call's output tokens
 	Summary          string // compaction summary (empty = not yet compacted)
+	GentleCompactDone bool  // runtime-only: true after stage-1 masking (not persisted)
 }
 
 // New creates a new session with a unique ID.

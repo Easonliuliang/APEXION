@@ -15,7 +15,8 @@ var (
 	autoApprove  bool
 	modelFlag    string
 	providerFlag string
-	useTUI bool
+	maxTurnsFlag int
+	useTUI       bool
 
 	// Package-level version info, set by Execute().
 	appVersion string
@@ -52,6 +53,7 @@ func Execute(version, commit, date string) {
 	rootCmd.PersistentFlags().BoolVar(&autoApprove, "auto-approve", false, "skip all tool execution confirmations")
 	rootCmd.PersistentFlags().StringVarP(&modelFlag, "model", "m", "", "override model")
 	rootCmd.PersistentFlags().StringVarP(&providerFlag, "provider", "p", "", "override provider")
+	rootCmd.PersistentFlags().IntVar(&maxTurnsFlag, "max-turns", 0, "max agent loop iterations (0=unlimited)")
 	rootCmd.PersistentFlags().BoolVar(&useTUI, "tui", false, "use bubbletea TUI mode (default: auto-detect terminal)")
 
 	// Subcommands
@@ -82,6 +84,9 @@ func initConfig() *config.Config {
 	}
 	if autoApprove {
 		cfg.Permissions.Mode = "auto-approve"
+	}
+	if maxTurnsFlag > 0 {
+		cfg.MaxIterations = maxTurnsFlag
 	}
 
 	return cfg

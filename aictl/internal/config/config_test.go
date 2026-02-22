@@ -11,8 +11,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Provider != "openai" {
 		t.Errorf("expected default provider 'openai', got %q", cfg.Provider)
 	}
-	if cfg.MaxIterations != 25 {
-		t.Errorf("expected default max_iterations 25, got %d", cfg.MaxIterations)
+	if cfg.MaxIterations != 0 {
+		t.Errorf("expected default max_iterations 0 (unlimited), got %d", cfg.MaxIterations)
 	}
 	if cfg.Permissions.Mode != "interactive" {
 		t.Errorf("expected default permission mode 'interactive', got %q", cfg.Permissions.Mode)
@@ -85,6 +85,35 @@ permissions:
 	}
 	if len(cfg.Permissions.AllowedPaths) != 1 {
 		t.Errorf("expected 1 allowed path, got %d", len(cfg.Permissions.AllowedPaths))
+	}
+}
+
+func TestLoad_MissingMaxIterations(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+	// No max_iterations in config → should stay 0 (unlimited).
+	os.WriteFile(path, []byte("provider: openai\n"), 0644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxIterations != 0 {
+		t.Errorf("expected max_iterations 0 (unlimited) when not specified, got %d", cfg.MaxIterations)
+	}
+}
+
+func TestLoad_ExplicitMaxIterations(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+	os.WriteFile(path, []byte("provider: openai\nmax_iterations: 100\n"), 0644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxIterations != 100 {
+		t.Errorf("expected max_iterations 100, got %d", cfg.MaxIterations)
 	}
 }
 

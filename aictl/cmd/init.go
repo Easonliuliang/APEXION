@@ -72,7 +72,6 @@ func runInit() error {
 				"api_key": apiKey,
 			},
 		},
-		"max_iterations": 25,
 		"permissions": map[string]any{
 			"mode":               "interactive",
 			"auto_approve_tools": []string{"read_file", "glob", "grep", "list_dir"},

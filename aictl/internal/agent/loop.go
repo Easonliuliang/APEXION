@@ -19,10 +19,7 @@ import (
 // A per-turn child context is created so that Esc can cancel the entire turn
 // (including LLM streaming) without affecting the session-level context.
 func (a *Agent) runAgentLoop(ctx context.Context) error {
-	maxIter := a.config.MaxIterations
-	if maxIter <= 0 {
-		maxIter = 25
-	}
+	maxIter := a.config.MaxIterations // 0 = unlimited
 
 	// Per-turn context: Esc cancels this, not the session.
 	turnCtx, turnCancel := context.WithCancel(ctx)
@@ -41,7 +38,9 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 	}
 	budget := session.NewTokenBudget(contextWindow, estimateTokens(a.systemPrompt))
 
-	for iteration := range maxIter {
+	doomDetector := &doomLoopDetector{}
+
+	for iteration := 0; maxIter == 0 || iteration < maxIter; iteration++ {
 		// Check if the turn was cancelled before starting an iteration.
 		if turnCtx.Err() != nil {
 			a.io.SystemMessage("Interrupted.")
@@ -162,9 +161,27 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 			return nil
 		}
 
-		if iteration == maxIter-1 {
+		if maxIter > 0 && iteration == maxIter-1 {
 			a.io.SystemMessage(fmt.Sprintf(
 				"warning: reached max iterations (%d), stopping", maxIter))
+			return nil
+		}
+
+		// Doom loop detection: catch the model issuing identical tool calls repeatedly.
+		switch doomDetector.check(toolCalls) {
+		case doomLoopWarn:
+			warning := "You have been issuing the same tool calls repeatedly. " +
+				"This looks like an infinite loop. Try a different approach or stop calling tools."
+			a.io.SystemMessage("warning: possible doom loop detected — injecting hint to model")
+			a.session.AddMessage(provider.Message{
+				Role: provider.RoleUser,
+				Content: []provider.Content{{
+					Type: provider.ContentTypeText,
+					Text: "[SYSTEM] " + warning,
+				}},
+			})
+		case doomLoopStop:
+			a.io.SystemMessage("error: doom loop detected — same tool calls repeated 5 times, stopping")
 			return nil
 		}
 

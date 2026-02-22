@@ -68,7 +68,8 @@ type Config struct {
 	// SystemPrompt 自定义 system prompt（空则使用默认）
 	SystemPrompt string `yaml:"system_prompt"`
 
-	// MaxIterations agent loop 最大迭代次数（默认 25）
+	// MaxIterations agent loop 最大迭代次数。
+	// 0 = unlimited (default). Loop exits when model stops calling tools.
 	MaxIterations int `yaml:"max_iterations"`
 
 	// ContextWindow overrides the provider's default context window size.
@@ -80,7 +81,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Provider:      "openai",
-		MaxIterations: 25,
+		MaxIterations: 0,
 		Providers:     make(map[string]*ProviderConfig),
 		Permissions: PermissionConfig{
 			Mode: "interactive",

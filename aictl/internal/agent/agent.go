@@ -549,11 +549,15 @@ func (a *Agent) handleConfig() bool {
 	if model == "" {
 		model = a.provider.DefaultModel()
 	}
+	maxIterDisplay := "unlimited"
+	if a.config.MaxIterations > 0 {
+		maxIterDisplay = fmt.Sprintf("%d", a.config.MaxIterations)
+	}
 	info := fmt.Sprintf(`Current configuration:
   Provider:       %s
   Model:          %s
   Context window: %d
-  Max iterations: %d
+  Max iterations: %s
   Permission:     %s
   Session ID:     %s
   Messages:       %d
@@ -561,7 +565,7 @@ func (a *Agent) handleConfig() bool {
 		a.config.Provider,
 		model,
 		a.provider.ContextWindow(),
-		a.config.MaxIterations,
+		maxIterDisplay,
 		a.config.Permissions.Mode,
 		a.session.ID,
 		len(a.session.Messages),
@@ -773,7 +777,7 @@ func (a *Agent) runSubAgent(ctx context.Context, prompt string) (string, error) 
 	roExecutor := tools.NewExecutor(roRegistry, permission.AllowAllPolicy{})
 
 	subCfg := *a.config
-	subCfg.MaxIterations = 15
+	subCfg.MaxIterations = 0
 	subCfg.SystemPrompt = subAgentSystemPrompt
 
 	sub := &Agent{

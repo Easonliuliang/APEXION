@@ -1,5 +1,5 @@
-// Package mcp 提供 MCP (Model Context Protocol) 客户端支持，
-// 允许 apexion 连接外部 MCP server 并将其工具纳入 agent 的工具集。
+// Package mcp provides MCP (Model Context Protocol) client support,
+// allowing apexion to connect to external MCP servers and integrate their tools.
 package mcp
 
 import (
@@ -9,16 +9,16 @@ import (
 	"path/filepath"
 )
 
-// ServerType 指定 MCP server 的传输类型。
+// ServerType specifies the MCP server transport type.
 type ServerType string
 
 const (
-	ServerTypeStdio ServerType = "stdio" // 子进程 stdin/stdout
-	ServerTypeHTTP  ServerType = "http"  // Streamable HTTP (新协议)
+	ServerTypeStdio ServerType = "stdio" // child process stdin/stdout
+	ServerTypeHTTP  ServerType = "http"  // Streamable HTTP
 )
 
-// ServerConfig 单个 MCP server 的连接配置。
-// JSON 字段与 Claude Code 的 mcp.json 格式兼容：
+// ServerConfig holds connection settings for a single MCP server.
+// JSON fields are compatible with Claude Code's mcp.json format:
 //
 //	{
 //	  "command": "npx",
@@ -26,7 +26,7 @@ const (
 //	  "env": { "KEY": "${ENV_VAR}" }
 //	}
 type ServerConfig struct {
-	// Type 传输类型，省略时按 Command/URL 字段自动推断
+	// Type is the transport type; inferred from Command/URL if omitted.
 	Type ServerType `json:"type,omitempty"`
 
 	// Stdio transport
@@ -39,7 +39,7 @@ type ServerConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// EffectiveType 推断实际传输类型。
+// EffectiveType infers the actual transport type.
 func (c *ServerConfig) EffectiveType() ServerType {
 	if c.Type != "" {
 		return c.Type
@@ -50,22 +50,22 @@ func (c *ServerConfig) EffectiveType() ServerType {
 	return ServerTypeStdio
 }
 
-// MCPConfig 是 mcp.json 文件的顶层结构。
+// MCPConfig is the top-level structure of an mcp.json file.
 type MCPConfig struct {
 	MCPServers map[string]ServerConfig `json:"mcpServers"`
 }
 
-// LoadMCPConfig 加载并合并全局和项目级 MCP 配置。
+// LoadMCPConfig loads and merges global and project-level MCP configuration.
 //
-// 加载顺序（后者覆盖前者中的同名 server）：
-//  1. ~/.config/apexion/mcp.json （全局配置）
-//  2. <cwd>/.apexion/mcp.json   （项目配置）
+// Loading order (later entries override earlier ones with the same server name):
+//  1. ~/.config/apexion/mcp.json  (global config)
+//  2. <cwd>/.apexion/mcp.json     (project config)
 //
-// 配置值中的 ${VAR} 和 $VAR 引用会被展开为当前环境变量。
+// ${VAR} and $VAR references in config values are expanded to environment variables.
 func LoadMCPConfig(cwd string) (*MCPConfig, error) {
 	merged := &MCPConfig{MCPServers: make(map[string]ServerConfig)}
 
-	// 1. 全局配置
+	// 1. Global config
 	home, err := os.UserHomeDir()
 	if err == nil {
 		globalPath := filepath.Join(home, ".config", "apexion", "mcp.json")
@@ -76,7 +76,7 @@ func LoadMCPConfig(cwd string) (*MCPConfig, error) {
 		}
 	}
 
-	// 2. 项目配置（覆盖全局同名 server）
+	// 2. Project config (overrides global servers with same name)
 	if cwd != "" {
 		projectPath := filepath.Join(cwd, ".apexion", "mcp.json")
 		if cfg, err := loadMCPFile(projectPath); err == nil && cfg != nil {
@@ -86,7 +86,7 @@ func LoadMCPConfig(cwd string) (*MCPConfig, error) {
 		}
 	}
 
-	// 展开所有字符串值中的环境变量
+	// Expand environment variables in all string values
 	expanded := &MCPConfig{MCPServers: make(map[string]ServerConfig)}
 	for name, srv := range merged.MCPServers {
 		expanded.MCPServers[name] = expandServerConfig(srv)
@@ -95,8 +95,8 @@ func LoadMCPConfig(cwd string) (*MCPConfig, error) {
 	return expanded, nil
 }
 
-// loadMCPFile 从指定路径加载单个 mcp.json 文件。
-// 文件不存在时返回 nil, nil（不视为错误）。
+// loadMCPFile loads a single mcp.json file from the given path.
+// Returns nil, nil if the file does not exist (not treated as an error).
 func loadMCPFile(path string) (*MCPConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -116,7 +116,7 @@ func loadMCPFile(path string) (*MCPConfig, error) {
 	return &cfg, nil
 }
 
-// expandServerConfig 展开 ServerConfig 所有字段中的环境变量引用。
+// expandServerConfig expands environment variable references in all ServerConfig fields.
 func expandServerConfig(srv ServerConfig) ServerConfig {
 	srv.Command = expandEnvVars(srv.Command)
 	srv.URL = expandEnvVars(srv.URL)
@@ -146,7 +146,7 @@ func expandServerConfig(srv ServerConfig) ServerConfig {
 	return srv
 }
 
-// expandEnvVars 将字符串中的 ${VAR} 和 $VAR 替换为当前环境变量值。
+// expandEnvVars replaces ${VAR} and $VAR in a string with current environment variable values.
 func expandEnvVars(s string) string {
 	return os.Expand(s, os.Getenv)
 }

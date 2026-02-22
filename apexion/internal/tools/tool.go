@@ -1,5 +1,5 @@
-// Package tools 定义了工具接口和共享类型，
-// 并提供工具注册表和执行器。
+// Package tools defines the tool interface and shared types,
+// and provides the tool registry and executor.
 package tools
 
 import (
@@ -7,46 +7,46 @@ import (
 	"encoding/json"
 )
 
-// PermissionLevel 定义工具操作的权限级别
+// PermissionLevel defines the permission level for a tool operation.
 type PermissionLevel int
 
 const (
-	PermissionRead      PermissionLevel = iota // 只读：自动允许
-	PermissionWrite                             // 写入：默认询问
-	PermissionExecute                           // 执行：默认询问（显示具体命令）
-	PermissionDangerous                         // 危险：强制确认（醒目警告）
+	PermissionRead      PermissionLevel = iota // read-only: auto-allow
+	PermissionWrite                             // write: prompt by default
+	PermissionExecute                           // execute: prompt by default (shows command)
+	PermissionDangerous                         // dangerous: force confirmation (prominent warning)
 )
 
-// ToolResult 是工具执行的结果
+// ToolResult is the result of a tool execution.
 type ToolResult struct {
-	Content       string // 主要输出内容
-	IsError       bool   // 是否为错误结果
-	Truncated     bool   // 内容是否被截断
-	UserCancelled bool   // 用户主动中断（Esc），应停止 agent loop
+	Content       string // primary output content
+	IsError       bool   // whether this is an error result
+	Truncated     bool   // whether content was truncated
+	UserCancelled bool   // user interrupted (Esc), should stop agent loop
 }
 
-// Tool 是所有可被 LLM 调用的工具的统一接口
+// Tool is the unified interface for all tools callable by the LLM.
 type Tool interface {
-	// Name 返回工具名称（snake_case），如 "read_file"
-	// 这是 LLM 调用时使用的名字，必须唯一
+	// Name returns the tool name (snake_case), e.g. "read_file".
+	// This is the name the LLM uses to invoke the tool; must be unique.
 	Name() string
 
-	// Description 返回给 LLM 的工具描述
-	// 应尽量详细，帮助 LLM 判断何时使用该工具
+	// Description returns the tool description sent to the LLM.
+	// Should be detailed enough to help the LLM decide when to use this tool.
 	Description() string
 
-	// Parameters 返回 JSON Schema 格式的参数定义（properties 部分）
+	// Parameters returns JSON Schema parameter definitions (properties section).
 	Parameters() map[string]any
 
-	// Execute 执行工具
-	// ctx 来自上层 agent loop，可被用户 Ctrl+C 取消
-	// params 是 LLM 提供的工具调用参数（已验证为合法 JSON）
+	// Execute runs the tool.
+	// ctx comes from the agent loop and can be cancelled by user Ctrl+C.
+	// params are the tool call arguments provided by the LLM (validated JSON).
 	Execute(ctx context.Context, params json.RawMessage) (ToolResult, error)
 
-	// IsReadOnly 标记该工具是否为只读操作
-	// 只读工具：自动允许执行，多个只读工具可并行执行
+	// IsReadOnly indicates whether this tool is a read-only operation.
+	// Read-only tools are auto-allowed and may run in parallel.
 	IsReadOnly() bool
 
-	// PermissionLevel 返回该工具所需的权限级别
+	// PermissionLevel returns the permission level required by this tool.
 	PermissionLevel() PermissionLevel
 }

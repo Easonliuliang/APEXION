@@ -524,6 +524,51 @@ func (a *Agent) handleProvider(name string) bool {
 		a.io.Error("Provider hot-swap not available.")
 		return true
 	}
+
+	// Ensure the provider has an API key; prompt interactively if missing.
+	pc := a.config.GetProviderConfig(name)
+	needSave := false
+
+	if pc.APIKey == "" {
+		a.io.SystemMessage(fmt.Sprintf("No API key configured for %q.", name))
+		a.io.SystemMessage("Enter API key:")
+		key, err := a.io.ReadInput()
+		if err != nil || strings.TrimSpace(key) == "" {
+			a.io.Error("Cancelled — no API key provided.")
+			return true
+		}
+		key = strings.TrimSpace(key)
+
+		// Determine base URL: known providers get auto-filled, unknown ones need input.
+		baseURL := ""
+		if _, known := config.KnownProviderBaseURLs[name]; !known {
+			// Also not known if user already had a base_url in config.
+			if pc.BaseURL == "" {
+				a.io.SystemMessage(fmt.Sprintf("No known base URL for %q.", name))
+				a.io.SystemMessage("Enter base URL:")
+				url, err := a.io.ReadInput()
+				if err != nil || strings.TrimSpace(url) == "" {
+					a.io.Error("Cancelled — no base URL provided.")
+					return true
+				}
+				baseURL = strings.TrimSpace(url)
+			}
+		}
+
+		// Write into in-memory config.
+		if a.config.Providers == nil {
+			a.config.Providers = make(map[string]*config.ProviderConfig)
+		}
+		if a.config.Providers[name] == nil {
+			a.config.Providers[name] = &config.ProviderConfig{}
+		}
+		a.config.Providers[name].APIKey = key
+		if baseURL != "" {
+			a.config.Providers[name].BaseURL = baseURL
+		}
+		needSave = true
+	}
+
 	oldName := a.config.Provider
 	a.config.Provider = name
 	// Reset model so the new provider uses its default.
@@ -541,6 +586,17 @@ func (a *Agent) handleProvider(name string) bool {
 	a.rebuildSystemPrompt()
 	a.io.SystemMessage(fmt.Sprintf("Provider switched: %s → %s (model: %s)",
 		oldName, name, p.DefaultModel()))
+
+	// Persist provider switch (and any new credentials) to config file.
+	// Always save so that stale global model overrides are cleared.
+	pc2 := *a.config.GetProviderConfig(name)
+	if err := config.SaveProviderToFile(name, pc2); err != nil {
+		a.io.Error(fmt.Sprintf("Warning: failed to save config: %v", err))
+	} else if needSave {
+		home, _ := os.UserHomeDir()
+		a.io.SystemMessage(fmt.Sprintf("Config saved to %s",
+			filepath.Join(home, ".config", "apexion", "config.yaml")))
+	}
 	return true
 }
 
@@ -720,7 +776,7 @@ func (a *Agent) handleMCP(ctx context.Context, arg string) bool {
 		}
 
 	default:
-		// 显示连接状态
+		// Show connection status
 		status := a.mcpManager.Status()
 		if len(status) == 0 {
 			a.io.SystemMessage("No MCP servers configured.")
@@ -741,6 +797,32 @@ func (a *Agent) handleMCP(ctx context.Context, arg string) bool {
 	}
 
 	return true
+}
+
+// CustomCommandItems scans custom command directories and returns SlashMenuItems
+// for use in the TUI autocomplete menu. Called from cmd layer before agent creation.
+func CustomCommandItems(cwd string) []tui.SlashMenuItem {
+	cmds := loadCustomCommands(cwd)
+	if len(cmds) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(cmds))
+	for n := range cmds {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	items := make([]tui.SlashMenuItem, 0, len(cmds))
+	for _, n := range names {
+		desc := cmds[n].Description
+		if desc == "" {
+			desc = "(custom)"
+		}
+		items = append(items, tui.SlashMenuItem{
+			Name: "/" + n,
+			Desc: desc,
+		})
+	}
+	return items
 }
 
 // wireTaskTool finds the TaskTool in the registry and injects the sub-agent runner.

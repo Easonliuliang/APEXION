@@ -9,10 +9,10 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// MCPToolProxy 将单个 MCP 工具包装为 tools.Tool，使其可以被 agent 调用。
+// MCPToolProxy wraps a single MCP tool as a tools.Tool so it can be called by the agent.
 //
-// 工具名格式：mcp__<server>__<tool>
-// 例如：mcp__filesystem__read_file
+// Tool name format: mcp__<server>__<tool>
+// Example: mcp__filesystem__read_file
 type MCPToolProxy struct {
 	serverName string
 	tool       *mcpsdk.Tool
@@ -20,7 +20,7 @@ type MCPToolProxy struct {
 	fullName   string
 }
 
-// 确保 MCPToolProxy 实现了 tools.Tool 接口。
+// Ensure MCPToolProxy implements tools.Tool.
 var _ tools.Tool = (*MCPToolProxy)(nil)
 
 func (p *MCPToolProxy) Name() string { return p.fullName }
@@ -33,13 +33,13 @@ func (p *MCPToolProxy) Description() string {
 	return fmt.Sprintf("[MCP: %s] %s", p.serverName, desc)
 }
 
-// Parameters 从 InputSchema（any，实际为 map[string]any）中提取 properties。
+// Parameters extracts properties from InputSchema (any, actually map[string]any).
 func (p *MCPToolProxy) Parameters() map[string]any {
 	return extractProperties(p.tool.InputSchema)
 }
 
 func (p *MCPToolProxy) Execute(ctx context.Context, params json.RawMessage) (tools.ToolResult, error) {
-	// 解析 LLM 传入的参数
+	// Parse arguments from the LLM
 	var args map[string]any
 	if len(params) > 0 {
 		if err := json.Unmarshal(params, &args); err != nil {
@@ -67,16 +67,16 @@ func (p *MCPToolProxy) Execute(ctx context.Context, params json.RawMessage) (too
 	}, nil
 }
 
-// IsReadOnly MCP 工具默认不视为只读，要求用户确认。
+// IsReadOnly returns false; MCP tools are not read-only by default and require confirmation.
 func (p *MCPToolProxy) IsReadOnly() bool { return false }
 
-// PermissionLevel MCP 工具默认需要用户确认执行。
+// PermissionLevel returns PermissionExecute; MCP tools require user confirmation.
 func (p *MCPToolProxy) PermissionLevel() tools.PermissionLevel {
 	return tools.PermissionExecute
 }
 
-// RegisterTools 将 manager 中所有已连接 server 的工具注册到 registry。
-// 返回注册的工具总数。
+// RegisterTools registers all connected servers' tools from the manager into the registry.
+// Returns the total number of tools registered.
 func RegisterTools(manager *Manager, registry *tools.Registry) int {
 	count := 0
 	for serverName, serverTools := range manager.AllTools() {
@@ -94,12 +94,12 @@ func RegisterTools(manager *Manager, registry *tools.Registry) int {
 	return count
 }
 
-// ── Schema 转换 ───────────────────────────────────────────────────────────────
+// ── Schema conversion ────────────────────────────────────────────────────────
 
-// extractProperties 从 MCP Tool.InputSchema（any）中提取 JSON Schema properties。
+// extractProperties extracts JSON Schema properties from MCP Tool.InputSchema (any).
 //
-// 当 MCP 客户端从 server 接收工具时，InputSchema 是 JSON 反序列化的 map[string]any，
-// 结构为 {"type":"object","properties":{...},...}。
+// When the MCP client receives tools from a server, InputSchema is a JSON-deserialized
+// map[string]any with structure {"type":"object","properties":{...},...}.
 func extractProperties(schema any) map[string]any {
 	if schema == nil {
 		return map[string]any{}

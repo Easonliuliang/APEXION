@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// WriteFileTool 写入文件内容
+// WriteFileTool writes content to a file.
 type WriteFileTool struct{}
 
 func (t *WriteFileTool) Name() string        { return "write_file" }

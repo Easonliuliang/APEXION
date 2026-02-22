@@ -1,6 +1,6 @@
-// Package provider 定义了所有 LLM provider 的统一接口和共享类型。
-// 每个 provider adapter（openai.go, anthropic.go 等）实现 Provider 接口，
-// 负责将各家 API 的 streaming 响应归一化为统一的 Event 序列。
+// Package provider defines the unified interface and shared types for all LLM providers.
+// Each provider adapter (openai.go, anthropic.go, etc.) implements the Provider interface,
+// normalizing vendor-specific streaming responses into a unified Event sequence.
 package provider
 
 import (
@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 )
 
-// ── 消息类型 ──────────────────────────────────────────────────────────────────
+// ── Message types ────────────────────────────────────────────────────────────
 
 type Role string
 
@@ -25,7 +25,7 @@ const (
 	ContentTypeToolResult ContentType = "tool_result"
 )
 
-// Content 是消息中的一个内容块
+// Content is a single content block within a message.
 type Content struct {
 	Type       ContentType
 	Text       string
@@ -36,7 +36,7 @@ type Content struct {
 	IsError    bool            // tool_result
 }
 
-// Message 是对话历史中的一条消息
+// Message is a single message in the conversation history.
 type Message struct {
 	Role    Role
 	Content []Content
@@ -44,16 +44,16 @@ type Message struct {
 
 // ── Tool Schema ───────────────────────────────────────────────────────────────
 
-// ToolSchema 是发送给 LLM 的工具描述（JSON Schema 格式）
+// ToolSchema describes a tool sent to the LLM (JSON Schema format).
 type ToolSchema struct {
 	Name        string
 	Description string
 	Parameters  map[string]any // JSON Schema properties
 }
 
-// ── 请求类型 ──────────────────────────────────────────────────────────────────
+// ── Request types ────────────────────────────────────────────────────────────
 
-// ChatRequest 是发送给 provider 的统一请求格式
+// ChatRequest is the unified request format sent to a provider.
 type ChatRequest struct {
 	Model        string
 	Messages     []Message
@@ -62,25 +62,25 @@ type ChatRequest struct {
 	MaxTokens    int
 }
 
-// ── 事件类型（streaming 输出）────────────────────────────────────────────────
+// ── Event types (streaming output) ───────────────────────────────────────────
 
 type EventType int
 
 const (
-	// EventTextDelta: LLM 输出的文本增量，应实时渲染到终端
+	// EventTextDelta: incremental text output from the LLM, rendered in real time.
 	EventTextDelta EventType = iota
 
-	// EventToolCallDone: 一个完整的 tool call（provider 内部完成 JSON 拼接后发出）
+	// EventToolCallDone: a complete tool call (emitted after internal JSON assembly).
 	EventToolCallDone
 
-	// EventDone: 本轮消息结束，附带 token 用量
+	// EventDone: end of this message turn, includes token usage.
 	EventDone
 
-	// EventError: 发生错误
+	// EventError: an error occurred.
 	EventError
 )
 
-// Event 是 provider streaming 输出的统一事件
+// Event is the unified streaming event emitted by a provider.
 type Event struct {
 	Type EventType
 
@@ -97,40 +97,40 @@ type Event struct {
 	Error error
 }
 
-// ToolCallRequest 代表 LLM 请求执行的一个工具调用
+// ToolCallRequest represents a tool call requested by the LLM.
 type ToolCallRequest struct {
 	ID    string
 	Name  string
 	Input json.RawMessage
 }
 
-// Usage 记录本次 API 调用的 token 消耗
+// Usage records token consumption for an API call.
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
 }
 
-// ── Provider 接口 ─────────────────────────────────────────────────────────────
+// ── Provider interface ───────────────────────────────────────────────────────
 
-// Provider 是所有 LLM provider 的统一接口。
-// 实现者负责：
-// 1. 将统一 ChatRequest 转换为该 provider 的 API 请求格式
-// 2. 将该 provider 的 streaming 响应转换为统一 Event 序列
-// 3. 内部处理 streaming tool use 的 JSON 片段拼接（状态机）
-// 4. 处理该 provider 特有的错误码和重试逻辑
+// Provider is the unified interface for all LLM providers.
+// Implementors are responsible for:
+// 1. Converting the unified ChatRequest into the provider's API request format
+// 2. Converting the provider's streaming response into a unified Event sequence
+// 3. Internally assembling streaming tool-use JSON fragments (state machine)
+// 4. Handling provider-specific error codes and retry logic
 type Provider interface {
-	// Chat 发起 streaming 对话。
-	// 返回的 channel 会持续发出 Event，直到 EventDone 或 EventError 后关闭。
-	// 调用方必须消费完 channel，否则会导致 goroutine 泄漏。
+	// Chat initiates a streaming conversation.
+	// The returned channel emits Events until EventDone or EventError, then closes.
+	// The caller must fully consume the channel to avoid goroutine leaks.
 	Chat(ctx context.Context, req *ChatRequest) (<-chan Event, error)
 
-	// Name 返回 provider 标识符，如 "anthropic", "openai", "deepseek"
+	// Name returns the provider identifier, e.g. "anthropic", "openai", "deepseek".
 	Name() string
 
-	// Models 返回支持的模型列表
+	// Models returns the list of supported models.
 	Models() []string
 
-	// DefaultModel 返回默认模型
+	// DefaultModel returns the default model.
 	DefaultModel() string
 
 	// ContextWindow returns the default context window size for the current model.

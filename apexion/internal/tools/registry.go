@@ -2,28 +2,28 @@ package tools
 
 import "sort"
 
-// Registry 管理所有已注册的工具
+// Registry manages all registered tools.
 type Registry struct {
 	tools map[string]Tool
 }
 
-// NewRegistry 创建空的工具注册表
+// NewRegistry creates an empty tool registry.
 func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Tool)}
 }
 
-// Register 注册一个工具到注册表
+// Register adds a tool to the registry.
 func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
 }
 
-// Get 根据名称获取工具
+// Get retrieves a tool by name.
 func (r *Registry) Get(name string) (Tool, bool) {
 	t, ok := r.tools[name]
 	return t, ok
 }
 
-// All 返回所有已注册的工具（按名称排序）
+// All returns all registered tools sorted by name.
 func (r *Registry) All() []Tool {
 	result := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
@@ -35,8 +35,8 @@ func (r *Registry) All() []Tool {
 	return result
 }
 
-// ToSchemas 将所有工具转换为 schema 列表
-// 格式：[{"name": "...", "description": "...", "input_schema": {"type":"object","properties":{...}}}]
+// ToSchemas converts all tools to a list of schema maps.
+// Format: [{"name": "...", "description": "...", "input_schema": {"type":"object","properties":{...}}}]
 func (r *Registry) ToSchemas() []map[string]any {
 	tools := r.All()
 	schemas := make([]map[string]any, 0, len(tools))
@@ -72,7 +72,7 @@ func ReadOnlyRegistry() *Registry {
 	return r
 }
 
-// DefaultRegistry 创建包含所有内置工具的注册表
+// DefaultRegistry creates a registry with all built-in tools.
 func DefaultRegistry(webCfg *WebToolsConfig) *Registry {
 	r := NewRegistry()
 	r.Register(&ReadFileTool{})

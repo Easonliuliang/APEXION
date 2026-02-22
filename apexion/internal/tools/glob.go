@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// GlobTool 使用 glob 模式匹配文件
+// GlobTool matches files using glob patterns.
 type GlobTool struct{}
 
 func (t *GlobTool) Name() string        { return "glob" }

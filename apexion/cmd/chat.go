@@ -39,7 +39,7 @@ func runChat() error {
 	policy := permission.NewDefaultPolicy(&cfg.Permissions)
 	executor := tools.NewExecutor(registry, policy)
 
-	// MCP：加载配置、连接所有 server、注册工具
+	// MCP: load config, connect all servers, register tools
 	cwd, _ := os.Getwd()
 	mcpCfg, _ := mcp.LoadMCPConfig(cwd)
 	var mcpMgr *mcp.Manager
@@ -90,11 +90,12 @@ func runChat() error {
 		}
 
 		tuiCfg := tui.TUIConfig{
-			Version:     appVersion,
-			Provider:    cfg.Provider,
-			Model:       cfg.Model,
-			SessionID:   sessionID,
-			ShowWelcome: true,
+			Version:        appVersion,
+			Provider:       cfg.Provider,
+			Model:          cfg.Model,
+			SessionID:      sessionID,
+			ShowWelcome:    true,
+			CustomCommands: agent.CustomCommandItems(cwd),
 		}
 
 		// ctx is managed by RunTUI: cancelled on Ctrl+C, TUI exit, or OS signal.

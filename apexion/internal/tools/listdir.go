@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// ListDirTool 列出目录内容
+// ListDirTool lists directory contents.
 type ListDirTool struct{}
 
 func (t *ListDirTool) Name() string        { return "list_dir" }

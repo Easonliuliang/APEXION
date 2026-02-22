@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// EditFileTool 通过精确字符串替换编辑文件
+// EditFileTool edits files via exact string replacement.
 type EditFileTool struct{}
 
 func (t *EditFileTool) Name() string        { return "edit_file" }

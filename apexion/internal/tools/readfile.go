@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// ReadFileTool 读取文件内容
+// ReadFileTool reads file contents.
 type ReadFileTool struct{}
 
 func (t *ReadFileTool) Name() string        { return "read_file" }

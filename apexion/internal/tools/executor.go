@@ -30,7 +30,7 @@ type LoopCanceller interface {
 	ClearLoopCancel()
 }
 
-// Executor 负责执行工具调用，包含权限检查和超时控制
+// Executor handles tool execution with permission checks and timeout control.
 type Executor struct {
 	registry       *Registry
 	confirmer      Confirmer
@@ -40,7 +40,7 @@ type Executor struct {
 	tracker        *FileTracker
 }
 
-// NewExecutor 创建工具执行器
+// NewExecutor creates a tool executor.
 func NewExecutor(registry *Registry, policy permission.Policy) *Executor {
 	return &Executor{
 		registry:       registry,
@@ -86,7 +86,7 @@ func (e *Executor) Policy() permission.Policy {
 	return e.policy
 }
 
-// Execute 执行单个工具调用
+// Execute runs a single tool call.
 func (e *Executor) Execute(ctx context.Context, name string, params json.RawMessage) ToolResult {
 	tool, ok := e.registry.Get(name)
 	if !ok {

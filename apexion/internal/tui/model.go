@@ -339,7 +339,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.slashFiltered = nil
 				return m, nil
 			case "enter":
-				// Enter 和 Tab 一样：填入命令 + 空格，关闭菜单，让用户继续输入参数
+				// Same as Tab: fill in the command + space, close menu, let user continue typing args
 				if m.slashSel >= 0 && m.slashSel < len(m.slashFiltered) {
 					m.textinput.SetValue(m.slashFiltered[m.slashSel].Name + " ")
 					m.textinput.CursorEnd()

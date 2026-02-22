@@ -1,11 +1,12 @@
-// Package config 负责加载和管理 apexion 的配置。
-// 配置来源优先级（从高到低）：
-// 1. 环境变量（LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, ANTHROPIC_API_KEY 等）
-// 2. --config flag 指定的配置文件路径
+// Package config loads and manages apexion configuration.
+// Configuration source priority (highest to lowest):
+// 1. Environment variables (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, ANTHROPIC_API_KEY, etc.)
+// 2. Config file path specified via --config flag
 // 3. ~/.config/apexion/config.yaml
 package config
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,29 +14,66 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ProviderConfig 单个 provider 的配置
+//go:embed providers_default.yaml
+var defaultProvidersYAML []byte
+
+// ProviderDefaults holds the default base URL and model for a provider.
+type ProviderDefaults struct {
+	BaseURL      string `yaml:"base_url"`
+	DefaultModel string `yaml:"default_model"`
+}
+
+// LoadProviderDefaults parses the embedded defaults and merges any user
+// overrides from ~/.config/apexion/providers.yaml.
+func LoadProviderDefaults() map[string]ProviderDefaults {
+	defs := make(map[string]ProviderDefaults)
+	_ = yaml.Unmarshal(defaultProvidersYAML, &defs)
+
+	home, err := os.UserHomeDir()
+	if err == nil {
+		userPath := filepath.Join(home, ".config", "apexion", "providers.yaml")
+		if data, err := os.ReadFile(userPath); err == nil {
+			userDefs := make(map[string]ProviderDefaults)
+			if yaml.Unmarshal(data, &userDefs) == nil {
+				for name, ud := range userDefs {
+					d := defs[name]
+					if ud.BaseURL != "" {
+						d.BaseURL = ud.BaseURL
+					}
+					if ud.DefaultModel != "" {
+						d.DefaultModel = ud.DefaultModel
+					}
+					defs[name] = d
+				}
+			}
+		}
+	}
+	return defs
+}
+
+// ProviderConfig holds configuration for a single provider.
 type ProviderConfig struct {
 	APIKey  string `yaml:"api_key"`
 	BaseURL string `yaml:"base_url"`
 	Model   string `yaml:"model"`
 }
 
-// PermissionConfig 权限系统配置
+// PermissionConfig holds permission system settings.
 type PermissionConfig struct {
-	// Mode: "interactive"（默认）| "auto-approve" | "yolo"
+	// Mode: "interactive" (default) | "auto-approve" | "yolo"
 	Mode string `yaml:"mode"`
 
-	// AutoApproveTools: 自动批准的工具列表（如 ["read_file", "glob", "grep"]）
+	// AutoApproveTools: tools auto-approved without confirmation (e.g. ["read_file", "glob", "grep"])
 	AutoApproveTools []string `yaml:"auto_approve_tools"`
 
-	// AllowedCommands: bash 命令白名单（前缀匹配，如 ["go test", "go build"]）
+	// AllowedCommands: bash command allowlist with prefix matching (e.g. ["go test", "go build"])
 	AllowedCommands []string `yaml:"allowed_commands"`
 
-	// AllowedPaths: 允许修改的文件路径 glob 模式（如 ["./src/**", "./tests/**"]）
-	// 空列表 = 允许所有路径
+	// AllowedPaths: file path glob patterns allowed for modification (e.g. ["./src/**", "./tests/**"])
+	// Empty list = allow all paths
 	AllowedPaths []string `yaml:"allowed_paths"`
 
-	// DeniedCommands: 命令黑名单（即使 auto-approve/yolo 模式下也强制拒绝）
+	// DeniedCommands: command denylist (always blocked, even in auto-approve/yolo mode)
 	DeniedCommands []string `yaml:"denied_commands"`
 }
 
@@ -48,27 +86,27 @@ type WebConfig struct {
 	SearchAPIKey string `yaml:"search_api_key"`
 }
 
-// Config 是 apexion 的完整配置结构
+// Config is the complete configuration structure for apexion.
 type Config struct {
-	// Provider 当前使用的 provider 名称（如 "deepseek", "anthropic", "openai"）
+	// Provider is the active provider name (e.g. "deepseek", "anthropic", "openai")
 	Provider string `yaml:"provider"`
 
-	// Model 当前使用的模型（覆盖 provider 默认模型）
+	// Model overrides the provider's default model.
 	Model string `yaml:"model"`
 
-	// Providers 各 provider 的具体配置
+	// Providers holds per-provider configuration.
 	Providers map[string]*ProviderConfig `yaml:"providers"`
 
-	// Permissions 权限系统配置
+	// Permissions holds permission system settings.
 	Permissions PermissionConfig `yaml:"permissions"`
 
 	// Web holds settings for web tools (web_fetch, web_search)
 	Web WebConfig `yaml:"web"`
 
-	// SystemPrompt 自定义 system prompt（空则使用默认）
+	// SystemPrompt is a custom system prompt (empty uses default).
 	SystemPrompt string `yaml:"system_prompt"`
 
-	// MaxIterations agent loop 最大迭代次数。
+	// MaxIterations is the max number of agent loop iterations.
 	// 0 = unlimited (default). Loop exits when model stops calling tools.
 	MaxIterations int `yaml:"max_iterations"`
 
@@ -77,7 +115,7 @@ type Config struct {
 	ContextWindow int `yaml:"context_window"`
 }
 
-// DefaultConfig 返回默认配置
+// DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		Provider:      "openai",
@@ -93,11 +131,11 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Load 加载配置文件，合并环境变量覆盖
+// Load reads the config file and merges environment variable overrides.
 func Load(configPath string) (*Config, error) {
 	cfg := DefaultConfig()
 
-	// 确定配置文件路径
+	// Determine config file path
 	if configPath == "" {
 		home, err := os.UserHomeDir()
 		if err == nil {
@@ -105,17 +143,17 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
-	// 读取配置文件（不存在时使用默认配置）
+	// Read config file (use defaults if not found)
 	if data, err := os.ReadFile(configPath); err == nil {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("invalid config file %s: %w", configPath, err)
 		}
 	}
 
-	// 环境变量覆盖
+	// Apply environment variable overrides
 	applyEnvOverrides(cfg)
 
-	// 初始化 providers map
+	// Initialize providers map
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]*ProviderConfig)
 	}
@@ -123,7 +161,7 @@ func Load(configPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// GetProviderConfig 获取指定 provider 的配置，不存在时返回空配置
+// GetProviderConfig returns the config for the named provider, or an empty config if not found.
 func (c *Config) GetProviderConfig(name string) *ProviderConfig {
 	if pc, ok := c.Providers[name]; ok {
 		return pc
@@ -131,9 +169,86 @@ func (c *Config) GetProviderConfig(name string) *ProviderConfig {
 	return &ProviderConfig{}
 }
 
-// applyEnvOverrides 将环境变量覆盖到配置中
+var (
+	// KnownProviderBaseURLs maps well-known provider names to their base URLs.
+	// Populated from providers_default.yaml (embedded) + user overrides.
+	KnownProviderBaseURLs map[string]string
+
+	// KnownProviderModels maps well-known provider names to their default models.
+	// Populated from providers_default.yaml (embedded) + user overrides.
+	KnownProviderModels map[string]string
+)
+
+func init() {
+	defs := LoadProviderDefaults()
+	KnownProviderBaseURLs = make(map[string]string, len(defs))
+	KnownProviderModels = make(map[string]string, len(defs))
+	for name, d := range defs {
+		if d.BaseURL != "" {
+			KnownProviderBaseURLs[name] = d.BaseURL
+		}
+		if d.DefaultModel != "" {
+			KnownProviderModels[name] = d.DefaultModel
+		}
+	}
+}
+
+// SaveProviderToFile persists a single provider's config and the active provider
+// name into ~/.config/apexion/config.yaml, preserving all other user settings.
+func SaveProviderToFile(providerName string, pc ProviderConfig) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	cfgPath := filepath.Join(home, ".config", "apexion", "config.yaml")
+
+	// Read existing file into a generic map to preserve unknown fields.
+	raw := make(map[string]any)
+	if data, err := os.ReadFile(cfgPath); err == nil {
+		_ = yaml.Unmarshal(data, &raw) // ignore errors; start fresh if corrupt
+	}
+
+	// Ensure providers sub-map exists.
+	providers, _ := raw["providers"].(map[string]any)
+	if providers == nil {
+		providers = make(map[string]any)
+	}
+
+	// Build the provider entry.
+	entry := map[string]any{
+		"api_key": pc.APIKey,
+	}
+	if pc.BaseURL != "" {
+		entry["base_url"] = pc.BaseURL
+	}
+	if pc.Model != "" {
+		entry["model"] = pc.Model
+	}
+	providers[providerName] = entry
+	raw["providers"] = providers
+
+	// Set active provider and clear stale global model override.
+	raw["provider"] = providerName
+	delete(raw, "model")
+
+	// Ensure config directory exists.
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		return fmt.Errorf("cannot create config directory: %w", err)
+	}
+
+	data, err := yaml.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(cfgPath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	return nil
+}
+
+// applyEnvOverrides applies environment variable overrides to the config.
 func applyEnvOverrides(cfg *Config) {
-	// 通用覆盖
+	// Generic overrides
 	if v := os.Getenv("LLM_API_KEY"); v != "" {
 		provider := cfg.Provider
 		if cfg.Providers[provider] == nil {
@@ -152,7 +267,7 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Model = v
 	}
 
-	// Anthropic 专用
+	// Anthropic-specific
 	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
 		if cfg.Providers["anthropic"] == nil {
 			cfg.Providers["anthropic"] = &ProviderConfig{}
@@ -160,7 +275,7 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Providers["anthropic"].APIKey = v
 	}
 
-	// Provider 选择
+	// Provider selection
 	if v := os.Getenv("APEXION_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}

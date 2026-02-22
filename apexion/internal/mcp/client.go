@@ -12,24 +12,24 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Manager 管理所有配置的 MCP server 连接。
-// 线程安全：并发调用 CallTool 是安全的。
+// Manager manages all configured MCP server connections.
+// Thread-safe: concurrent CallTool calls are safe.
 type Manager struct {
 	mu      sync.RWMutex
 	servers map[string]*serverConn
 }
 
-// serverConn 维护单个 MCP server 的连接状态和工具缓存。
+// serverConn maintains the connection state and tool cache for a single MCP server.
 type serverConn struct {
 	mu      sync.Mutex
 	config  ServerConfig
-	name    string // server 名称，用于日志
+	name    string // server name, used in logs
 	client  *mcp.Client
 	session *mcp.ClientSession
-	tools   []*mcp.Tool // ListTools 缓存
+	tools   []*mcp.Tool // ListTools cache
 }
 
-// NewManager 根据配置创建 Manager，但不立即连接。
+// NewManager creates a Manager from config without connecting immediately.
 func NewManager(cfg *MCPConfig) *Manager {
 	m := &Manager{
 		servers: make(map[string]*serverConn),
@@ -47,8 +47,8 @@ func NewManager(cfg *MCPConfig) *Manager {
 	return m
 }
 
-// ConnectAll 尝试连接所有配置的 server，并缓存工具列表。
-// 单个 server 连接失败不影响其他 server，错误列表一并返回。
+// ConnectAll connects to all configured servers and caches their tool lists.
+// Individual server failures do not affect others; all errors are returned.
 func (m *Manager) ConnectAll(ctx context.Context) []error {
 	m.mu.RLock()
 	servers := make([]*serverConn, 0, len(m.servers))
@@ -66,10 +66,10 @@ func (m *Manager) ConnectAll(ctx context.Context) []error {
 	return errs
 }
 
-// CallTool 在指定 server 上调用工具。自动重连一次。
-// 返回 (output, isError, error)：
-//   - error 表示传输层/协议层错误
-//   - isError=true 表示工具本身返回了错误内容
+// CallTool calls a tool on the specified server. Automatically retries once after reconnecting.
+// Returns (output, isError, error):
+//   - error indicates a transport/protocol-level error
+//   - isError=true means the tool itself returned error content
 func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (string, bool, error) {
 	m.mu.RLock()
 	conn, ok := m.servers[serverName]
@@ -80,7 +80,7 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 
 	result, err := conn.callTool(ctx, toolName, args)
 	if err != nil {
-		// 重连一次再试
+		// Reconnect once and retry
 		if reconnErr := conn.connect(ctx); reconnErr != nil {
 			return "", false, fmt.Errorf("call tool %q on %q (reconnect failed: %v): %w",
 				toolName, serverName, reconnErr, err)
@@ -94,7 +94,7 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 	return extractContent(result), result.IsError, nil
 }
 
-// AllTools 返回所有已连接 server 的工具列表，格式为 map[serverName]tools。
+// AllTools returns all connected servers' tools as map[serverName]tools.
 func (m *Manager) AllTools() map[string][]*mcp.Tool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -112,7 +112,7 @@ func (m *Manager) AllTools() map[string][]*mcp.Tool {
 	return out
 }
 
-// Status 返回每个 server 的连接状态描述，供 /mcp 命令展示。
+// Status returns a connection status description for each server (used by /mcp command).
 func (m *Manager) Status() map[string]string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -130,7 +130,7 @@ func (m *Manager) Status() map[string]string {
 	return out
 }
 
-// Reset 断开并重新连接所有 server。
+// Reset disconnects and reconnects all servers.
 func (m *Manager) Reset(ctx context.Context) []error {
 	m.mu.RLock()
 	servers := make([]*serverConn, 0, len(m.servers))
@@ -152,7 +152,7 @@ func (m *Manager) Reset(ctx context.Context) []error {
 	return errs
 }
 
-// Close 关闭所有 server 连接，释放资源。
+// Close shuts down all server connections and releases resources.
 func (m *Manager) Close() {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -164,14 +164,14 @@ func (m *Manager) Close() {
 	}
 }
 
-// ── serverConn 内部方法 ────────────────────────────────────────────────────────
+// ── serverConn internal methods ──────────────────────────────────────────────
 
-// connect 建立连接并缓存工具列表（幂等：已连接则跳过）。
+// connect establishes a connection and caches the tool list (idempotent: skips if already connected).
 func (conn *serverConn) connect(ctx context.Context) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	// 已连接则跳过
+	// Skip if already connected
 	if conn.session != nil {
 		return nil
 	}
@@ -187,10 +187,10 @@ func (conn *serverConn) connect(ctx context.Context) error {
 	}
 	conn.session = session
 
-	// 缓存工具列表
+	// Cache tool list
 	result, err := session.ListTools(ctx, nil)
 	if err != nil {
-		// 连接成功但 ListTools 失败，记录但不报错
+		// Connected but ListTools failed; log but don't error
 		conn.tools = nil
 	} else {
 		conn.tools = result.Tools
@@ -199,7 +199,7 @@ func (conn *serverConn) connect(ctx context.Context) error {
 	return nil
 }
 
-// disconnect 关闭连接，清理状态（调用方需持有 mu 锁）。
+// disconnect closes the connection and cleans up state (caller must hold mu lock).
 func (conn *serverConn) disconnect() {
 	if conn.session != nil {
 		_ = conn.session.Close()
@@ -208,7 +208,7 @@ func (conn *serverConn) disconnect() {
 	conn.tools = nil
 }
 
-// callTool 在已有 session 上调用工具（调用方无需持锁）。
+// callTool calls a tool on an existing session (caller does not need to hold the lock).
 func (conn *serverConn) callTool(ctx context.Context, toolName string, args map[string]any) (*mcp.CallToolResult, error) {
 	conn.mu.Lock()
 	session := conn.session
@@ -224,9 +224,9 @@ func (conn *serverConn) callTool(ctx context.Context, toolName string, args map[
 	})
 }
 
-// ── 工具函数 ──────────────────────────────────────────────────────────────────
+// ── Utility functions ────────────────────────────────────────────────────────
 
-// buildTransport 根据 ServerConfig 创建合适的 MCP 传输层。
+// buildTransport creates the appropriate MCP transport based on ServerConfig.
 func buildTransport(cfg ServerConfig) (mcp.Transport, error) {
 	switch cfg.EffectiveType() {
 	case ServerTypeStdio:
@@ -234,7 +234,7 @@ func buildTransport(cfg ServerConfig) (mcp.Transport, error) {
 			return nil, fmt.Errorf("stdio transport requires 'command'")
 		}
 		cmd := exec.Command(cfg.Command, cfg.Args...)
-		// 继承父进程环境，再追加自定义 env
+		// Inherit parent process env, then append custom env
 		if len(cfg.Env) > 0 {
 			cmd.Env = os.Environ()
 			for k, v := range cfg.Env {
@@ -263,7 +263,7 @@ func buildTransport(cfg ServerConfig) (mcp.Transport, error) {
 	}
 }
 
-// extractContent 从 CallToolResult 提取文本内容。
+// extractContent extracts text content from a CallToolResult.
 func extractContent(result *mcp.CallToolResult) string {
 	if result == nil {
 		return ""
@@ -277,14 +277,14 @@ func extractContent(result *mcp.CallToolResult) string {
 	return strings.Join(parts, "\n")
 }
 
-// headerRoundTripper 为每个 HTTP 请求注入固定请求头。
+// headerRoundTripper injects fixed headers into every HTTP request.
 type headerRoundTripper struct {
 	base    http.RoundTripper
 	headers map[string]string
 }
 
 func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	// 克隆请求以避免修改原始请求
+	// Clone request to avoid mutating the original
 	r := req.Clone(req.Context())
 	if r.Header == nil {
 		r.Header = make(http.Header)

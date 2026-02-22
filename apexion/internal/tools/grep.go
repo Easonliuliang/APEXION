@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// GrepTool 递归搜索文件内容
+// GrepTool recursively searches file contents.
 type GrepTool struct{}
 
 func (t *GrepTool) Name() string        { return "grep" }

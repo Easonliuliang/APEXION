@@ -58,6 +58,7 @@ type spinnerKind int
 const (
 	spinnerNone     spinnerKind = iota
 	spinnerThinking             // LLM is thinking
+	spinnerStreaming            // text is streaming from LLM
 	spinnerTool                 // tool is executing
 )
 
@@ -70,11 +71,12 @@ type toolCallState struct {
 
 // TUIConfig carries version/provider info for the welcome page and status bar.
 type TUIConfig struct {
-	Version     string
-	Provider    string
-	Model       string
-	SessionID   string
-	ShowWelcome bool
+	Version        string
+	Provider       string
+	Model          string
+	SessionID      string
+	ShowWelcome    bool
+	CustomCommands []SlashMenuItem // custom commands injected by cmd layer
 }
 
 // ---------- styles ----------
@@ -236,6 +238,12 @@ type Model struct {
 	subAgentTool  string
 	subAgentCount int
 
+	// Slash command autocomplete menu
+	slashMenu     bool
+	slashAll      []SlashMenuItem
+	slashFiltered []SlashMenuItem
+	slashSel      int
+
 	cfg     TUIConfig
 	program *tea.Program
 
@@ -253,12 +261,15 @@ func NewModel(inputCh chan inputResult, cfg TUIConfig) Model {
 	sp.Spinner = apexionSpinner
 	sp.Style = spinnerStyle
 
+	allCmds := append(BuiltinSlashCommands(), cfg.CustomCommands...)
+
 	return Model{
 		textinput:   ti,
 		spinner:     sp,
 		liveContent: &strings.Builder{},
 		inputCh:     inputCh,
 		cfg:         cfg,
+		slashAll:    allCmds,
 	}
 }
 
@@ -297,7 +308,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.noiseDropCount = 4
 			return m, nil
 		}
-		if s == "esc" && m.inputMode {
+		if s == "esc" && m.inputMode && !m.slashMenu {
 			m.noiseDropCount = 4
 			return m, nil
 		}
@@ -305,6 +316,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.noiseDropCount--
 			return m, nil
 		}
+
+		// ── slash menu key handling (must come before general keys) ──
+		if m.inputMode && m.slashMenu && len(m.slashFiltered) > 0 {
+			switch s {
+			case "up":
+				if m.slashSel > 0 {
+					m.slashSel--
+				}
+				return m, nil
+			case "down":
+				if m.slashSel < len(m.slashFiltered)-1 {
+					m.slashSel++
+				}
+				return m, nil
+			case "tab":
+				if m.slashSel >= 0 && m.slashSel < len(m.slashFiltered) {
+					m.textinput.SetValue(m.slashFiltered[m.slashSel].Name + " ")
+					m.textinput.CursorEnd()
+				}
+				m.slashMenu = false
+				m.slashFiltered = nil
+				return m, nil
+			case "enter":
+				// Enter 和 Tab 一样：填入命令 + 空格，关闭菜单，让用户继续输入参数
+				if m.slashSel >= 0 && m.slashSel < len(m.slashFiltered) {
+					m.textinput.SetValue(m.slashFiltered[m.slashSel].Name + " ")
+					m.textinput.CursorEnd()
+				}
+				m.slashMenu = false
+				m.slashFiltered = nil
+				return m, nil
+			case "esc":
+				m.slashMenu = false
+				m.slashFiltered = nil
+				m.textinput.SetValue("")
+				return m, nil
+			}
+		}
+
 		switch s {
 		case "ctrl+c":
 			if m.questioning && m.questionCh != nil {
@@ -407,6 +457,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.textinput, cmd = m.textinput.Update(msg)
 			cmds = append(cmds, cmd)
+
+			// Update slash menu state based on current input value.
+			val := m.textinput.Value()
+			if strings.HasPrefix(val, "/") {
+				m.slashFiltered = filterSlashItems(m.slashAll, val)
+				m.slashMenu = len(m.slashFiltered) > 0
+				if m.slashSel >= len(m.slashFiltered) {
+					m.slashSel = 0
+				}
+			} else {
+				m.slashMenu = false
+				m.slashFiltered = nil
+			}
 		}
 
 	// ---------- custom messages from agent goroutine ----------
@@ -424,8 +487,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.spinner.Tick)
 
 	case textDeltaMsg:
-		if m.spinnerKind == spinnerThinking {
-			m.spinnerKind = spinnerNone
+		if m.spinnerKind != spinnerStreaming {
+			m.spinnerKind = spinnerStreaming
+			cmds = append(cmds, m.spinner.Tick)
 		}
 		m.streaming = true
 		m.liveContent.WriteString(msg.delta)
@@ -521,6 +585,8 @@ func (m Model) View() string {
 	case spinnerThinking:
 		// ✶ Thinking… — matches Claude Code's thinking indicator
 		live = dotRunningStyle.Render(m.spinner.View()) + hintStyle.Render(" Thinking…")
+	case spinnerStreaming:
+		live = m.liveContent.String() + dotRunningStyle.Render(m.spinner.View())
 	case spinnerTool:
 		if m.currentTool != nil {
 			live = m.renderToolRunning(m.currentTool)
@@ -546,6 +612,9 @@ func (m Model) View() string {
 		}
 	} else if m.inputMode {
 		input = m.textinput.View()
+		if m.slashMenu && len(m.slashFiltered) > 0 {
+			input += "\n" + renderSlashMenu(m.slashFiltered, m.slashSel, m.width)
+		}
 	} else {
 		input = systemStyle.Render("❯")
 	}
@@ -692,10 +761,19 @@ func (m *Model) renderStatusBar() string {
 	}
 	status := statusModelStyle.Render(" "+modelName) +
 		statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
-	if m.toolName != "" {
-		elapsed := int(time.Since(m.toolStartTime).Seconds())
-		status += statusBarStyle.Render(fmt.Sprintf(" │ %s (%ds)", toolDisplayName(m.toolName), elapsed))
+
+	switch m.spinnerKind {
+	case spinnerThinking:
+		status += statusBarStyle.Render(" │ ") + dotRunningStyle.Render(m.spinner.View()+" Thinking…")
+	case spinnerStreaming:
+		status += statusBarStyle.Render(" │ ") + dotRunningStyle.Render(m.spinner.View()+" Generating…")
+	case spinnerTool:
+		if m.toolName != "" {
+			elapsed := int(time.Since(m.toolStartTime).Seconds())
+			status += statusBarStyle.Render(fmt.Sprintf(" │ %s (%ds)", toolDisplayName(m.toolName), elapsed))
+		}
 	}
+
 	return separatorStyle.Width(m.width).Render(strings.Repeat("━", m.width)) + "\n" +
 		statusBarBgStyle.Width(m.width).Render(status)
 }

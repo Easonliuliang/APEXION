@@ -1,6 +1,10 @@
 # apexion
 
-**AI coding assistant in your terminal. Open-source, model-agnostic.**
+> *Immutable Structure, Divine Intelligence.*
+
+**Apex** (pinnacle) + **ion** (energy) — peak intelligence with unstoppable momentum.
+
+AI coding assistant in your terminal. Open-source, model-agnostic.
 
 `apexion` is a pure Go CLI tool that brings an agentic coding experience to your terminal — similar to Claude Code, but open-source and works with any LLM provider.
 

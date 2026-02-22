@@ -94,17 +94,17 @@ var (
 			Italic(true)
 
 	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("39")).
+			Foreground(lipgloss.Color("220")).
 			Bold(true)
 
-	// spinnerStyle: orange while active (matches ⏺ running color)
+	// spinnerStyle: cyan while active (cyber-Egyptian digital flow)
 	spinnerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214"))
+			Foreground(lipgloss.Color("51"))
 
 	// ── tool call: ⏺ dot ──────────────────────────────────────────────────
-	// Orange while running, gray when done — same as Claude Code.
+	// Cyan while running, gray when done — cyber-Egyptian theme.
 	dotRunningStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
+			Foreground(lipgloss.Color("51")).
 			Bold(true)
 
 	dotDoneStyle = lipgloss.NewStyle().
@@ -126,7 +126,7 @@ var (
 			Foreground(lipgloss.Color("196"))
 
 	toolSuccessStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("2"))
+				Foreground(lipgloss.Color("45"))
 
 	hintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245")).
@@ -134,34 +134,34 @@ var (
 
 	// Status bar
 	separatorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("238"))
+			Foreground(lipgloss.Color("136"))
 
 	statusBarBgStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("235"))
 
 	statusModelStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("235")).
-				Foreground(lipgloss.Color("2")).
+				Foreground(lipgloss.Color("220")).
 				Bold(true)
 
 	// Welcome box
 	welcomeBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("8")).
+				BorderForeground(lipgloss.Color("178")).
 				Padding(0, 1)
 
 	welcomeTitleStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("2")).
+				Foreground(lipgloss.Color("220")).
 				Bold(true)
 
 	welcomeLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("8"))
+				Foreground(lipgloss.Color("136"))
 
 	welcomeValueStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("252"))
+				Foreground(lipgloss.Color("255"))
 
 	welcomeHintStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245"))
+				Foreground(lipgloss.Color("45"))
 
 	// Confirm / permission: rounded border, blue-purple (matches Claude Code)
 	confirmBorderStyle = lipgloss.NewStyle().
@@ -189,10 +189,10 @@ var (
 				BorderForeground(lipgloss.Color("238"))
 )
 
-// claudeSpinner matches Claude Code's spinner character set and speed.
-var claudeSpinner = spinner.Spinner{
-	Frames: []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"},
-	FPS:    120 * time.Millisecond,
+// apexionSpinner uses Egyptian-style block symbols for a digital flow feel.
+var apexionSpinner = spinner.Spinner{
+	Frames: []string{"◢", "◣", "◤", "◥", "◢", "◣", "◤", "◥"},
+	FPS:    150 * time.Millisecond,
 }
 
 // ---------- Model ----------
@@ -246,11 +246,11 @@ type Model struct {
 // NewModel creates the initial bubbletea model.
 func NewModel(inputCh chan inputResult, cfg TUIConfig) Model {
 	ti := textinput.New()
-	ti.Prompt = "❯ "
+	ti.Prompt = "▸ "
 	ti.CharLimit = 4096
 
 	sp := spinner.New()
-	sp.Spinner = claudeSpinner
+	sp.Spinner = apexionSpinner
 	sp.Style = spinnerStyle
 
 	return Model{
@@ -416,7 +416,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textinput.Focus()
 
 	case userMsg:
-		cmds = append(cmds, tea.Println(userStyle.Render("You: "+msg.text)))
+		cmds = append(cmds, tea.Println(userStyle.Render("> "+msg.text)))
 
 	case thinkingStartMsg:
 		m.spinnerKind = spinnerThinking
@@ -696,7 +696,7 @@ func (m *Model) renderStatusBar() string {
 		elapsed := int(time.Since(m.toolStartTime).Seconds())
 		status += statusBarStyle.Render(fmt.Sprintf(" │ %s (%ds)", toolDisplayName(m.toolName), elapsed))
 	}
-	return separatorStyle.Width(m.width).Render(strings.Repeat("─", m.width)) + "\n" +
+	return separatorStyle.Width(m.width).Render(strings.Repeat("━", m.width)) + "\n" +
 		statusBarBgStyle.Width(m.width).Render(status)
 }
 
@@ -738,12 +738,14 @@ func (m *Model) renderMarkdown(text string) string {
 // ---------- welcome page ----------
 
 func renderWelcome(cfg TUIConfig) string {
-	cat := []string{
-		"█▀▀▀▀▀█",
-		"█ ●  ● █",
-		"█  ▲  █",
-		"█ ▄▄▄ █",
-		" ▀▀▀▀▀ ",
+	logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+
+	logo := []string{
+		`    _    ____  _______  _____ ___  _   _ `,
+		`   / \  |  _ \| ____\ \/ /_ _/ _ \| \ | |`,
+		`  / _ \ | |_) |  _|  \  / | | | | |  \| |`,
+		` / ___ \|  __/| |___ /  \ | | |_| | |\  |`,
+		`/_/   \_\_|   |_____/_/\_\___\___/|_| \_|`,
 	}
 
 	version := cfg.Version
@@ -751,34 +753,18 @@ func renderWelcome(cfg TUIConfig) string {
 		version = "dev"
 	}
 
-	info := []string{
-		welcomeLabelStyle.Render("Provider: ") + welcomeValueStyle.Render(cfg.Provider),
-		welcomeLabelStyle.Render("Model:    ") + welcomeValueStyle.Render(cfg.Model),
-		welcomeLabelStyle.Render("Session:  ") + welcomeValueStyle.Render(cfg.SessionID),
-		"",
-		welcomeHintStyle.Render("/help 查看命令  /compact 压缩上下文  pgup/pgdn 滚动"),
-	}
-
 	var lines []string
-	catWidth := 10
-	for i := 0; i < len(cat) || i < len(info); i++ {
-		left := ""
-		if i < len(cat) {
-			left = cat[i]
-		}
-		right := ""
-		if i < len(info) {
-			right = info[i]
-		}
-		visualWidth := lipgloss.Width(left)
-		padding := catWidth - visualWidth
-		if padding < 0 {
-			padding = 0
-		}
-		lines = append(lines, left+strings.Repeat(" ", padding)+right)
+	for _, l := range logo {
+		lines = append(lines, logoStyle.Render(l))
 	}
-	lines = append(lines, strings.Repeat(" ", catWidth)+
-		welcomeHintStyle.Render("/sessions 历史  /resume <id> 恢复"))
+	lines = append(lines, "")
+	lines = append(lines,
+		welcomeLabelStyle.Render("  Provider: ")+welcomeValueStyle.Render(cfg.Provider)+
+			welcomeLabelStyle.Render("    Model: ")+welcomeValueStyle.Render(cfg.Model))
+	lines = append(lines,
+		welcomeLabelStyle.Render("  Session:  ")+welcomeValueStyle.Render(cfg.SessionID))
+	lines = append(lines, "")
+	lines = append(lines, welcomeHintStyle.Render("  /help commands  /compact context  pgup/pgdn scroll"))
 
 	inner := strings.Join(lines, "\n")
 	title := welcomeTitleStyle.Render(fmt.Sprintf("apexion %s", version))

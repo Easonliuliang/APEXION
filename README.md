@@ -2,11 +2,9 @@
 
 > *Immutable Structure, Divine Intelligence.*
 
-**Apex** (pinnacle) + **ion** (energy) — peak intelligence with unstoppable momentum.
+**An open-source AI coding agent written in pure Go.** Single binary, zero dependencies, works with any LLM.
 
-AI coding assistant in your terminal. Open-source, model-agnostic.
-
-`apexion` is a pure Go CLI tool that brings an agentic coding experience to your terminal — similar to Claude Code, but open-source and works with any LLM provider.
+Like Claude Code, but built from scratch in Go — fast startup, tiny footprint, runs anywhere Go compiles.
 
 ```
 $ apexion
@@ -38,8 +36,8 @@ This is a Go CLI tool that...
 - **Cross-session memory** — `/memory add` to persist knowledge across sessions
 - **Custom commands** — define reusable prompt templates as markdown files
 - **Project context** — reads `APEXION.md` to understand your project's conventions
-- **Single binary** — `go build` produces one self-contained executable
-- **Cross-platform** — macOS, Linux, Windows
+- **Pure Go, single binary** — `go build` → one executable, no runtime, no node_modules, no Python venv
+- **Cross-platform** — macOS, Linux, Windows (amd64 / arm64)
 
 ---
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/apexion-ai/apexion/internal/tools"
 )
@@ -16,6 +17,7 @@ import (
 type PlainIO struct {
 	scanner *bufio.Scanner
 	tokens  int
+	mu      sync.Mutex // protects concurrent output during parallel tool execution
 }
 
 // NewPlainIO creates a PlainIO that reads from stdin.
@@ -53,10 +55,14 @@ func (p *PlainIO) TextDone(_ string) {
 }
 
 func (p *PlainIO) ToolStart(_, name, _ string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	fmt.Printf("\n%s\n  Executing %s...\n", strings.Repeat("-", 30), name)
 }
 
 func (p *PlainIO) ToolDone(_, _, result string, isErr bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if isErr {
 		fmt.Printf("    Error: %s\n", truncate(result, 80))
 	} else {
@@ -90,6 +96,9 @@ func (p *PlainIO) Error(msg string) {
 func (p *PlainIO) SetTokens(n int) {
 	p.tokens = n
 }
+
+func (p *PlainIO) SetContextInfo(_, _ int) {}
+func (p *PlainIO) SetPlanMode(_ bool)      {}
 
 func (p *PlainIO) AskQuestion(question string, options []string) (string, error) {
 	fmt.Printf("\n? %s\n", question)

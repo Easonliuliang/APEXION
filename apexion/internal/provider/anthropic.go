@@ -19,7 +19,7 @@ type AnthropicProvider struct {
 
 func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
 	if model == "" {
-		model = "claude-sonnet-4-20250514"
+		model = "claude-sonnet-4-20250514" // fallback; normally buildProvider passes the correct default
 	}
 	return &AnthropicProvider{
 		client: anthropic.NewClient(anthropicoption.WithAPIKey(apiKey)),
@@ -190,6 +190,10 @@ func (p *AnthropicProvider) buildMessages(msgs []Message) []anthropic.MessagePar
 				blocks = append(blocks, anthropic.NewToolUseBlock(c.ToolUseID, input, c.ToolName))
 			case ContentTypeToolResult:
 				blocks = append(blocks, anthropic.NewToolResultBlock(c.ToolUseID, c.ToolResult, c.IsError))
+			case ContentTypeImage:
+				if c.ImageData != "" {
+					blocks = append(blocks, anthropic.NewImageBlockBase64(c.ImageMediaType, c.ImageData))
+				}
 			}
 		}
 

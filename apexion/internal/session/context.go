@@ -283,7 +283,48 @@ func cloneMessages(msgs []provider.Message) []provider.Message {
 			if len(c.ToolInput) > 0 {
 				result[i].Content[j].ToolInput = append(json.RawMessage{}, c.ToolInput...)
 			}
+			// Note: ImageData is intentionally NOT cloned during compaction.
+			// Images are stripped to save memory.
 		}
+	}
+	return result
+}
+
+// StripImageData removes image data from messages to save tokens.
+// Replaces image content blocks with text placeholders.
+func StripImageData(messages []provider.Message) []provider.Message {
+	result := make([]provider.Message, 0, len(messages))
+	for _, msg := range messages {
+		needsStrip := false
+		for _, c := range msg.Content {
+			if c.Type == provider.ContentTypeImage && c.ImageData != "" {
+				needsStrip = true
+				break
+			}
+		}
+
+		if !needsStrip {
+			result = append(result, msg)
+			continue
+		}
+
+		// Deep copy this message, stripping image data.
+		newMsg := provider.Message{
+			Role:    msg.Role,
+			Content: make([]provider.Content, 0, len(msg.Content)),
+		}
+		for _, c := range msg.Content {
+			if c.Type == provider.ContentTypeImage {
+				// Replace image with text placeholder.
+				newMsg.Content = append(newMsg.Content, provider.Content{
+					Type: provider.ContentTypeText,
+					Text: "[Image omitted during compaction]",
+				})
+			} else {
+				newMsg.Content = append(newMsg.Content, c)
+			}
+		}
+		result = append(result, newMsg)
 	}
 	return result
 }
@@ -353,6 +394,162 @@ func MaskOldToolOutputs(messages []provider.Message, keepRecent int) []provider.
 	}
 
 	return result
+}
+
+// ── Tool importance levels for smart compaction ──────────────────────────────
+
+// ToolImportance represents how important a tool's output is for context.
+type ToolImportance int
+
+const (
+	ToolImportanceLow    ToolImportance = iota // easily re-fetched: glob, grep, list_dir, web_search, todo_read, git_log
+	ToolImportanceMedium                       // moderately important: git_status, git_diff, git_branch
+	ToolImportanceHigh                         // critical: read_file, bash, edit_file, write_file, web_fetch, task
+)
+
+// toolImportanceMap maps tool names to their importance levels.
+var toolImportanceMap = map[string]ToolImportance{
+	// Low: search/discovery tools — output can be re-generated easily.
+	"glob":       ToolImportanceLow,
+	"grep":       ToolImportanceLow,
+	"list_dir":   ToolImportanceLow,
+	"web_search": ToolImportanceLow,
+	"todo_read":  ToolImportanceLow,
+	"git_log":    ToolImportanceLow,
+
+	// Medium: git state tools — useful context but refreshable.
+	"git_status": ToolImportanceMedium,
+	"git_diff":   ToolImportanceMedium,
+	"git_branch": ToolImportanceMedium,
+
+	// High: everything else — file contents, command output, modifications.
+	"read_file":  ToolImportanceHigh,
+	"bash":       ToolImportanceHigh,
+	"edit_file":  ToolImportanceHigh,
+	"write_file": ToolImportanceHigh,
+	"web_fetch":  ToolImportanceHigh,
+	"task":       ToolImportanceHigh,
+	"question":   ToolImportanceHigh,
+	"git_commit": ToolImportanceHigh,
+	"git_push":   ToolImportanceHigh,
+	"todo_write": ToolImportanceHigh,
+}
+
+// getToolImportance returns the importance level of a tool.
+func getToolImportance(toolName string) ToolImportance {
+	if imp, ok := toolImportanceMap[toolName]; ok {
+		return imp
+	}
+	return ToolImportanceHigh // unknown tools default to high
+}
+
+// MaskOldToolOutputsSmart replaces old tool_result content with compact placeholders,
+// only masking tools at or below the specified importance threshold.
+// Error results (IsError=true) are never masked.
+// Keeps the last keepRecent tool results intact regardless of importance.
+func MaskOldToolOutputsSmart(messages []provider.Message, keepRecent int, maxImportance ToolImportance) []provider.Message {
+	// Count total tool_result blocks and identify which ones to potentially mask.
+	type toolResultInfo struct {
+		msgIdx  int
+		contIdx int
+		name    string
+	}
+	var allToolResults []toolResultInfo
+	for i, msg := range messages {
+		for j, c := range msg.Content {
+			if c.Type == provider.ContentTypeToolResult {
+				// Find the tool name from the preceding tool_use block.
+				name := findToolNameForResult(messages, i, c.ToolUseID)
+				allToolResults = append(allToolResults, toolResultInfo{
+					msgIdx: i, contIdx: j, name: name,
+				})
+			}
+		}
+	}
+
+	total := len(allToolResults)
+	if total <= keepRecent {
+		return messages // nothing to mask
+	}
+
+	// Build a set of (msgIdx, contIdx) to mask.
+	maskSet := make(map[[2]int]string) // key → placeholder text
+	candidateCount := total - keepRecent
+	for k := 0; k < candidateCount; k++ {
+		tr := allToolResults[k]
+		msg := messages[tr.msgIdx]
+		c := msg.Content[tr.contIdx]
+
+		// Never mask error results.
+		if c.IsError {
+			continue
+		}
+		// Only mask if tool importance is at or below threshold.
+		if getToolImportance(tr.name) > maxImportance {
+			continue
+		}
+		// Only mask if there's actual content to mask.
+		if len(c.ToolResult) == 0 {
+			continue
+		}
+
+		placeholder := fmt.Sprintf("[%s output omitted: %d chars]", tr.name, len(c.ToolResult))
+		maskSet[[2]int{tr.msgIdx, tr.contIdx}] = placeholder
+	}
+
+	if len(maskSet) == 0 {
+		return messages
+	}
+
+	// Build new messages with masked content.
+	result := make([]provider.Message, 0, len(messages))
+	for i, msg := range messages {
+		needsMasking := false
+		for j := range msg.Content {
+			if _, ok := maskSet[[2]int{i, j}]; ok {
+				needsMasking = true
+				break
+			}
+		}
+
+		if !needsMasking {
+			result = append(result, msg)
+			continue
+		}
+
+		newMsg := provider.Message{
+			Role:    msg.Role,
+			Content: make([]provider.Content, len(msg.Content)),
+		}
+		for j, c := range msg.Content {
+			if placeholder, ok := maskSet[[2]int{i, j}]; ok {
+				newMsg.Content[j] = provider.Content{
+					Type:       c.Type,
+					ToolUseID:  c.ToolUseID,
+					ToolResult: placeholder,
+					IsError:    c.IsError,
+				}
+			} else {
+				newMsg.Content[j] = c
+			}
+		}
+		result = append(result, newMsg)
+	}
+
+	return result
+}
+
+// findToolNameForResult finds the tool name associated with a tool_result by its ToolUseID.
+func findToolNameForResult(messages []provider.Message, beforeMsgIdx int, toolUseID string) string {
+	// Search backwards for the matching tool_use block.
+	for i := beforeMsgIdx; i >= 0; i-- {
+		for _, c := range messages[i].Content {
+			if c.Type == provider.ContentTypeToolUse && c.ToolUseID == toolUseID {
+				return c.ToolName
+			}
+		}
+	}
+	return ""
 }
 
 // countToolResults counts tool_result blocks in a message.

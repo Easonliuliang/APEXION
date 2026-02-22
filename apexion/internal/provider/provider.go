@@ -23,17 +23,20 @@ const (
 	ContentTypeText       ContentType = "text"
 	ContentTypeToolUse    ContentType = "tool_use"
 	ContentTypeToolResult ContentType = "tool_result"
+	ContentTypeImage      ContentType = "image"
 )
 
 // Content is a single content block within a message.
 type Content struct {
-	Type       ContentType
-	Text       string
-	ToolUseID  string          // tool_use / tool_result
-	ToolName   string          // tool_use
-	ToolInput  json.RawMessage // tool_use
-	ToolResult string          // tool_result
-	IsError    bool            // tool_result
+	Type           ContentType
+	Text           string
+	ToolUseID      string          // tool_use / tool_result
+	ToolName       string          // tool_use
+	ToolInput      json.RawMessage // tool_use
+	ToolResult     string          // tool_result
+	IsError        bool            // tool_result
+	ImageData      string          // image: base64-encoded data
+	ImageMediaType string          // image: MIME type (e.g. "image/png")
 }
 
 // Message is a single message in the conversation history.

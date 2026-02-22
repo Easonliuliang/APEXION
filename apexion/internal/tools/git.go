@@ -292,3 +292,166 @@ func (t *GitPushTool) Execute(ctx context.Context, params json.RawMessage) (Tool
 
 	return ToolResult{Content: out}, nil
 }
+
+// ── git_log ───────────────────────────────────────────────────────────────────
+
+// GitLogTool shows git commit log history.
+type GitLogTool struct{}
+
+func (t *GitLogTool) Name() string                     { return "git_log" }
+func (t *GitLogTool) IsReadOnly() bool                 { return true }
+func (t *GitLogTool) PermissionLevel() PermissionLevel { return PermissionRead }
+
+func (t *GitLogTool) Description() string {
+	return "Show git commit log history. " +
+		"Returns recent commits with hashes and messages. " +
+		"Use count to control how many commits to show (default 20)."
+}
+
+func (t *GitLogTool) Parameters() map[string]any {
+	return map[string]any{
+		"count": map[string]any{
+			"type":        "integer",
+			"description": "Number of commits to show (default: 20).",
+		},
+		"ref": map[string]any{
+			"type":        "string",
+			"description": "Git ref to show log from (e.g. main, feature-branch, HEAD~5). Omit for current HEAD.",
+		},
+		"oneline": map[string]any{
+			"type":        "boolean",
+			"description": "If true (default), use compact one-line format. If false, show full log.",
+		},
+		"dir": map[string]any{
+			"type":        "string",
+			"description": "Directory to run git log in (default: current directory).",
+		},
+	}
+}
+
+func (t *GitLogTool) Execute(ctx context.Context, params json.RawMessage) (ToolResult, error) {
+	var p struct {
+		Count   int    `json:"count"`
+		Ref     string `json:"ref"`
+		Oneline *bool  `json:"oneline"`
+		Dir     string `json:"dir"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return ToolResult{}, fmt.Errorf("invalid params: %w", err)
+	}
+
+	if p.Count <= 0 {
+		p.Count = 20
+	}
+
+	// Default oneline to true.
+	oneline := true
+	if p.Oneline != nil {
+		oneline = *p.Oneline
+	}
+
+	args := []string{"log"}
+	if oneline {
+		args = append(args, "--oneline")
+	}
+	args = append(args, fmt.Sprintf("-n%d", p.Count))
+
+	if p.Ref != "" {
+		args = append(args, p.Ref)
+	}
+
+	out, err := runGit(ctx, p.Dir, args...)
+	if err != nil {
+		return ToolResult{Content: fmt.Sprintf("git log error: %v\n%s", err, out), IsError: true}, nil
+	}
+
+	if out == "" {
+		return ToolResult{Content: "(no commits)"}, nil
+	}
+
+	return ToolResult{Content: out}, nil
+}
+
+// ── git_branch ────────────────────────────────────────────────────────────────
+
+// GitBranchTool manages git branches (list, create, checkout).
+type GitBranchTool struct{}
+
+func (t *GitBranchTool) Name() string                     { return "git_branch" }
+func (t *GitBranchTool) IsReadOnly() bool                 { return false }
+func (t *GitBranchTool) PermissionLevel() PermissionLevel { return PermissionWrite }
+
+func (t *GitBranchTool) Description() string {
+	return "Manage git branches. Actions: " +
+		"'list' (default) shows all branches including remotes, " +
+		"'create' creates a new branch and switches to it, " +
+		"'checkout' switches to an existing branch."
+}
+
+func (t *GitBranchTool) Parameters() map[string]any {
+	return map[string]any{
+		"action": map[string]any{
+			"type":        "string",
+			"description": "Action to perform: 'list' (default), 'create', or 'checkout'.",
+			"enum":        []string{"list", "create", "checkout"},
+		},
+		"name": map[string]any{
+			"type":        "string",
+			"description": "Branch name (required for 'create' and 'checkout').",
+		},
+		"dir": map[string]any{
+			"type":        "string",
+			"description": "Directory to run git branch in (default: current directory).",
+		},
+	}
+}
+
+func (t *GitBranchTool) Execute(ctx context.Context, params json.RawMessage) (ToolResult, error) {
+	var p struct {
+		Action string `json:"action"`
+		Name   string `json:"name"`
+		Dir    string `json:"dir"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return ToolResult{}, fmt.Errorf("invalid params: %w", err)
+	}
+
+	if p.Action == "" {
+		p.Action = "list"
+	}
+
+	switch p.Action {
+	case "list":
+		out, err := runGit(ctx, p.Dir, "branch", "-a")
+		if err != nil {
+			return ToolResult{Content: fmt.Sprintf("git branch error: %v\n%s", err, out), IsError: true}, nil
+		}
+		if out == "" {
+			return ToolResult{Content: "(no branches)"}, nil
+		}
+		return ToolResult{Content: out}, nil
+
+	case "create":
+		if p.Name == "" {
+			return ToolResult{Content: "branch name is required for 'create' action", IsError: true}, nil
+		}
+		out, err := runGit(ctx, p.Dir, "checkout", "-b", p.Name)
+		if err != nil {
+			return ToolResult{Content: fmt.Sprintf("git checkout -b error: %v\n%s", err, out), IsError: true}, nil
+		}
+		return ToolResult{Content: out}, nil
+
+	case "checkout":
+		if p.Name == "" {
+			return ToolResult{Content: "branch name is required for 'checkout' action", IsError: true}, nil
+		}
+		out, err := runGit(ctx, p.Dir, "checkout", p.Name)
+		if err != nil {
+			return ToolResult{Content: fmt.Sprintf("git checkout error: %v\n%s", err, out), IsError: true}, nil
+		}
+		return ToolResult{Content: out}, nil
+
+	default:
+		return ToolResult{Content: fmt.Sprintf("unknown action: %s (use 'list', 'create', or 'checkout')", p.Action), IsError: true}, nil
+	}
+}

@@ -19,10 +19,12 @@ const (
 
 // ToolResult is the result of a tool execution.
 type ToolResult struct {
-	Content       string // primary output content
-	IsError       bool   // whether this is an error result
-	Truncated     bool   // whether content was truncated
-	UserCancelled bool   // user interrupted (Esc), should stop agent loop
+	Content        string // primary output content
+	IsError        bool   // whether this is an error result
+	Truncated      bool   // whether content was truncated
+	UserCancelled  bool   // user interrupted (Esc), should stop agent loop
+	ImageData      string // base64-encoded image data (set by read_file for images)
+	ImageMediaType string // MIME type of the image (e.g. "image/png")
 }
 
 // Tool is the unified interface for all tools callable by the LLM.

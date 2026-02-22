@@ -54,9 +54,18 @@ func runOnce(prompt string) error {
 	registry := tools.DefaultRegistry(&tools.WebToolsConfig{
 		SearchProvider: cfg.Web.SearchProvider,
 		SearchAPIKey:   cfg.Web.SearchAPIKey,
+	}, &tools.BashToolConfig{
+		WorkDir:  cfg.Sandbox.WorkDir,
+		AuditLog: cfg.Sandbox.AuditLog,
 	})
 	policy := permission.NewDefaultPolicy(&cfg.Permissions)
 	executor := tools.NewExecutor(registry, policy)
+
+	// Load hooks from .apexion/hooks.yaml and ~/.config/apexion/hooks.yaml
+	cwd, _ := os.Getwd()
+	if hm := tools.LoadHooks(cwd); hm.HasHooks() {
+		executor.SetHooks(hm)
+	}
 
 	dbPath, err := session.DefaultDBPath()
 	if err != nil {

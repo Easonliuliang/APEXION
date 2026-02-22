@@ -59,6 +59,12 @@ type WebToolsConfig struct {
 	SearchAPIKey   string
 }
 
+// BashToolConfig holds configuration for bash tool sandboxing.
+type BashToolConfig struct {
+	WorkDir  string // restrict execution to this directory
+	AuditLog string // path for logging commands
+}
+
 // ReadOnlyRegistry creates a registry with only read-only tools.
 // Used by sub-agents that should not modify files or run commands.
 func ReadOnlyRegistry() *Registry {
@@ -69,16 +75,46 @@ func ReadOnlyRegistry() *Registry {
 	r.Register(&ListDirTool{})
 	r.Register(&WebFetchTool{})
 	r.Register(&TodoReadTool{})
+	r.Register(&GitLogTool{})
+	return r
+}
+
+// CodeRegistry creates a registry with read + write + execute tools.
+// Used by code sub-agents that need to modify files and run commands.
+// Does NOT include task (no nesting) or question (sub-agents can't prompt).
+func CodeRegistry() *Registry {
+	r := NewRegistry()
+	// Read tools
+	r.Register(&ReadFileTool{})
+	r.Register(&GlobTool{})
+	r.Register(&GrepTool{})
+	r.Register(&ListDirTool{})
+	// Write tools
+	r.Register(&EditFileTool{})
+	r.Register(&WriteFileTool{})
+	// Execute tools
+	r.Register(&BashTool{})
+	// Git tools
+	r.Register(&GitStatusTool{})
+	r.Register(&GitDiffTool{})
+	r.Register(&GitLogTool{})
+	r.Register(&GitBranchTool{})
+	r.Register(&GitCommitTool{})
 	return r
 }
 
 // DefaultRegistry creates a registry with all built-in tools.
-func DefaultRegistry(webCfg *WebToolsConfig) *Registry {
+func DefaultRegistry(webCfg *WebToolsConfig, bashCfg *BashToolConfig) *Registry {
 	r := NewRegistry()
 	r.Register(&ReadFileTool{})
 	r.Register(&EditFileTool{})
 	r.Register(&WriteFileTool{})
-	r.Register(&BashTool{})
+	bashTool := &BashTool{}
+	if bashCfg != nil {
+		bashTool.WorkDir = bashCfg.WorkDir
+		bashTool.AuditLog = bashCfg.AuditLog
+	}
+	r.Register(bashTool)
 	r.Register(&GlobTool{})
 	r.Register(&GrepTool{})
 	r.Register(&ListDirTool{})
@@ -86,6 +122,8 @@ func DefaultRegistry(webCfg *WebToolsConfig) *Registry {
 	r.Register(&GitDiffTool{})
 	r.Register(&GitCommitTool{})
 	r.Register(&GitPushTool{})
+	r.Register(&GitLogTool{})
+	r.Register(&GitBranchTool{})
 	r.Register(&QuestionTool{})
 	r.Register(&TaskTool{})
 	r.Register(&TodoWriteTool{})

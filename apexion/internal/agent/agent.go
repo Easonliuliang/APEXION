@@ -33,6 +33,32 @@ Rules:
 - Return a concise, well-organized summary of your findings.
 - If you cannot find what was asked, say so clearly.`
 
+const planSubAgentSystemPrompt = `You are a planning sub-agent. Your job is to analyze the codebase and produce a detailed implementation plan.
+
+You have read-only tools: read_file, glob, grep, list_dir, web_fetch, todo_read.
+You CANNOT modify files, run commands, or make git changes.
+
+Rules:
+- Thoroughly explore the codebase to understand the current architecture.
+- Use tools to gather evidence about existing patterns and conventions.
+- Structure your plan as:
+  1. Files to modify (with full paths)
+  2. Specific changes for each file (describe what to add/change)
+  3. Verification steps (how to test the changes)
+- Be specific and actionable. Include code snippets where helpful.`
+
+const codeSubAgentSystemPrompt = `You are a coding sub-agent. You can read, write, and edit files, and run commands.
+
+Your job is to complete the specific coding task given to you.
+
+Rules:
+- Focus exclusively on the task described in the prompt.
+- Make minimal, targeted changes. Do not refactor or modify unrelated code.
+- Use edit_file for modifying existing files. Use write_file only for new files.
+- Run bash commands when needed (e.g. to build, test, or verify changes).
+- When finished, provide a clear summary of all changes you made.
+- Do NOT create unnecessary files or add features beyond what was asked.`
+
 // ProviderFactory creates a Provider from a config. Used for /provider hot-swap.
 type ProviderFactory func(cfg *config.Config) (provider.Provider, error)
 
@@ -51,6 +77,9 @@ type Agent struct {
 	summarizer      session.Summarizer
 	providerFactory ProviderFactory
 	customCommands  map[string]*CustomCommand
+	planMode        bool
+	rules           []Rule
+	skills          []SkillInfo
 }
 
 // New creates a new Agent with the given IO implementation.
@@ -84,6 +113,8 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 		io:             ui,
 		summarizer:     &session.LLMSummarizer{Provider: p},
 		customCommands: loadCustomCommands(cwd),
+		rules:          loadRules(cwd),
+		skills:         loadSkills(cwd),
 	}
 	a.rebuildSystemPrompt()
 	a.wireTaskTool()
@@ -125,6 +156,25 @@ func (a *Agent) rebuildSystemPrompt() {
 		projectTag := "project:" + filepath.Base(cwd)
 		if mem := a.memoryStore.LoadForPrompt(projectTag, 2048); mem != "" {
 			a.systemPrompt += "\n\n" + mem
+		}
+	}
+
+	// Inject always-active rules.
+	for _, r := range a.rules {
+		if len(r.PathPatterns) == 0 {
+			a.systemPrompt += "\n\n<rule name=\"" + r.Name + "\">\n" + r.Content + "\n</rule>"
+		}
+	}
+
+	// List available skills so the LLM knows what it can load.
+	if len(a.skills) > 0 {
+		a.systemPrompt += "\n\nAvailable project skills (load with read_file tool when you need detailed knowledge):"
+		for _, s := range a.skills {
+			desc := s.Desc
+			if desc == "" {
+				desc = s.Name
+			}
+			a.systemPrompt += "\n- " + s.Path + " — " + desc
 		}
 	}
 }
@@ -248,6 +298,21 @@ func (a *Agent) handleSlashCommand(ctx context.Context, input string) (bool, boo
 		return a.handleMemory(arg), false
 	case "/mcp":
 		return a.handleMCP(ctx, arg), false
+	case "/plan":
+		a.planMode = !a.planMode
+		if a.planMode {
+			a.io.SystemMessage("Plan mode ON — agent will analyze and propose, not execute.")
+		} else {
+			a.io.SystemMessage("Plan mode OFF — agent will execute normally.")
+		}
+		a.io.SetPlanMode(a.planMode)
+		return true, false
+	case "/rules":
+		return a.handleRules(), false
+	case "/skills":
+		return a.handleSkills(), false
+	case "/audit":
+		return a.handleAudit(), false
 	default:
 		// Check custom commands.
 		name := strings.TrimPrefix(cmd, "/")
@@ -272,6 +337,7 @@ func (a *Agent) handleCompact(ctx context.Context) bool {
 	a.session.Summary = summary
 	a.session.Messages = session.TruncateSession(a.session.Messages, 10)
 	a.session.GentleCompactDone = false
+	a.session.GentleCompactPhase = 0
 	after := a.session.EstimateTokens()
 	a.io.SystemMessage(fmt.Sprintf("Compacted: %dk → %dk tokens. %d messages retained.\nSummary:\n%s",
 		before/1000, after/1000, len(a.session.Messages), truncate(summary, 300)))
@@ -316,10 +382,13 @@ func (a *Agent) handleHelp() bool {
   /model <name>      Switch model (e.g. /model claude-haiku-4-5-20251001)
   /provider <name>   Switch provider (e.g. /provider deepseek)
   /config            Show current configuration
+  /plan              Toggle plan mode (read-only analysis)
   /compact           Manually trigger context compaction
   /changes           Show files modified in this session
   /trust             Show session-level tool approvals
   /trust reset       Clear all session approvals
+  /rules             List loaded rules
+  /skills            List available skills
   /commands           List custom commands
   /memory             List saved memories
   /memory add <text>  Save a memory (add tags with #tag)
@@ -327,6 +396,7 @@ func (a *Agent) handleHelp() bool {
   /memory delete <id> Delete a memory
   /mcp               Show MCP server connection status
   /mcp reset         Reconnect all MCP servers
+  /audit             Show bash command audit log
   /save              Save current session to disk
   /sessions          List saved sessions
   /resume <id>       Resume a saved session (use short ID prefix)
@@ -754,6 +824,67 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+func (a *Agent) handleRules() bool {
+	if len(a.rules) == 0 {
+		a.io.SystemMessage("No rules loaded.\nPlace .md files in .apexion/rules/ or ~/.config/apexion/rules/")
+		return true
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Loaded rules (%d):\n", len(a.rules)))
+	for _, r := range a.rules {
+		scope := "always active"
+		if len(r.PathPatterns) > 0 {
+			scope = "paths: " + strings.Join(r.PathPatterns, ", ")
+		}
+		desc := r.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		sb.WriteString(fmt.Sprintf("  %-20s %s  [%s]\n", r.Name, desc, scope))
+		sb.WriteString(fmt.Sprintf("    source: %s\n", r.Source))
+	}
+	a.io.SystemMessage(strings.TrimRight(sb.String(), "\n"))
+	return true
+}
+
+func (a *Agent) handleSkills() bool {
+	if len(a.skills) == 0 {
+		a.io.SystemMessage("No skills found.\nPlace .md files in .apexion/skills/ or ~/.config/apexion/skills/")
+		return true
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Available skills (%d):\n", len(a.skills)))
+	for _, s := range a.skills {
+		desc := s.Desc
+		if desc == "" {
+			desc = "(no description)"
+		}
+		sb.WriteString(fmt.Sprintf("  %-20s %s\n", s.Name, desc))
+		sb.WriteString(fmt.Sprintf("    path: %s\n", s.Path))
+	}
+	a.io.SystemMessage(strings.TrimRight(sb.String(), "\n"))
+	return true
+}
+
+func (a *Agent) handleAudit() bool {
+	if a.config.Sandbox.AuditLog == "" {
+		a.io.SystemMessage("Audit logging not configured.\nSet sandbox.audit_log in config.yaml")
+		return true
+	}
+	data, err := os.ReadFile(a.config.Sandbox.AuditLog)
+	if err != nil {
+		a.io.SystemMessage("No audit log found at " + a.config.Sandbox.AuditLog)
+		return true
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	// Show last 20 lines
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	a.io.SystemMessage(fmt.Sprintf("Audit log (last %d entries):\n%s", len(lines), strings.Join(lines, "\n")))
+	return true
+}
+
 func (a *Agent) handleMCP(ctx context.Context, arg string) bool {
 	if a.mcpManager == nil {
 		a.io.SystemMessage("MCP not configured. Create ~/.config/apexion/mcp.json or .apexion/mcp.json.")
@@ -825,7 +956,8 @@ func CustomCommandItems(cwd string) []tui.SlashMenuItem {
 	return items
 }
 
-// wireTaskTool finds the TaskTool in the registry and injects the sub-agent runner.
+// wireTaskTool finds the TaskTool in the registry and injects the sub-agent runner
+// and confirmer (for code mode).
 func (a *Agent) wireTaskTool() {
 	t, ok := a.executor.Registry().Get("task")
 	if !ok {
@@ -836,6 +968,10 @@ func (a *Agent) wireTaskTool() {
 		return
 	}
 	tt.SetRunner(a.runSubAgent)
+	// Wire confirmer for code mode confirmation (if available).
+	if c, ok := a.io.(tools.Confirmer); ok {
+		tt.SetConfirmer(c)
+	}
 }
 
 // subAgentReporter is an optional interface for sending sub-agent progress to the TUI.
@@ -843,8 +979,9 @@ type subAgentReporter interface {
 	ReportSubAgentProgress(tui.SubAgentProgress)
 }
 
-// runSubAgent creates and runs an ephemeral read-only sub-agent.
-func (a *Agent) runSubAgent(ctx context.Context, prompt string) (string, error) {
+// runSubAgent creates and runs an ephemeral sub-agent.
+// mode is "explore" (default), "plan", or "code".
+func (a *Agent) runSubAgent(ctx context.Context, prompt string, mode string) (string, error) {
 	// If the main IO supports progress reporting, wire it up.
 	var buf *tui.BufferIO
 	if pr, ok := a.io.(subAgentReporter); ok {
@@ -855,20 +992,37 @@ func (a *Agent) runSubAgent(ctx context.Context, prompt string) (string, error) 
 		buf = tui.NewBufferIO()
 	}
 
-	roRegistry := tools.ReadOnlyRegistry()
-	roExecutor := tools.NewExecutor(roRegistry, permission.AllowAllPolicy{})
+	var executor *tools.Executor
+	var sysPrompt string
+
+	switch mode {
+	case "code":
+		// Code sub-agent gets write permissions with AllowAll policy
+		// (user already confirmed via the confirmer at task call time).
+		codeRegistry := tools.CodeRegistry()
+		executor = tools.NewExecutor(codeRegistry, permission.AllowAllPolicy{})
+		sysPrompt = codeSubAgentSystemPrompt
+	case "plan":
+		roRegistry := tools.ReadOnlyRegistry()
+		executor = tools.NewExecutor(roRegistry, permission.AllowAllPolicy{})
+		sysPrompt = planSubAgentSystemPrompt
+	default: // "explore"
+		roRegistry := tools.ReadOnlyRegistry()
+		executor = tools.NewExecutor(roRegistry, permission.AllowAllPolicy{})
+		sysPrompt = subAgentSystemPrompt
+	}
 
 	subCfg := *a.config
 	subCfg.MaxIterations = 0
-	subCfg.SystemPrompt = subAgentSystemPrompt
+	subCfg.SystemPrompt = sysPrompt
 
 	sub := &Agent{
 		provider:   a.provider,
-		executor:   roExecutor,
+		executor:   executor,
 		config:     &subCfg,
 		session:    session.New(),
 		store:      session.NullStore{},
-		basePrompt: subAgentSystemPrompt,
+		basePrompt: sysPrompt,
 		io:         buf,
 	}
 	sub.rebuildSystemPrompt()

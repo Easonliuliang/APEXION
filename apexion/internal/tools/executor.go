@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/apexion-ai/apexion/internal/permission"
@@ -38,6 +39,8 @@ type Executor struct {
 	defaultTimeout time.Duration
 	toolCanceller  ToolCanceller
 	tracker        *FileTracker
+	confirmMu      sync.Mutex    // serializes confirmation dialogs during parallel execution
+	hooks          *HookManager  // pre/post tool hooks (nil = no hooks)
 }
 
 // NewExecutor creates a tool executor.
@@ -53,6 +56,11 @@ func NewExecutor(registry *Registry, policy permission.Policy) *Executor {
 // FileTracker returns the executor's file change tracker.
 func (e *Executor) FileTracker() *FileTracker {
 	return e.tracker
+}
+
+// SetHooks injects the hook manager for pre/post tool hooks.
+func (e *Executor) SetHooks(hm *HookManager) {
+	e.hooks = hm
 }
 
 // SetConfirmer injects the UI-layer confirmer (called after New to avoid
@@ -112,7 +120,12 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		return ToolResult{Content: "Blocked: tool execution denied by policy", IsError: true}
 	case permission.NeedConfirmation:
 		if e.confirmer != nil {
-			if !e.confirmer.Confirm(name, string(params), tool.PermissionLevel()) {
+			// Serialize confirmation prompts so only one dialog is shown at a time.
+			e.confirmMu.Lock()
+			approved := e.confirmer.Confirm(name, string(params), tool.PermissionLevel())
+			e.confirmMu.Unlock()
+
+			if !approved {
 				// User pressed Esc on confirmation — this IS user cancellation.
 				// Stop the loop, return to user input.
 				return ToolResult{
@@ -128,6 +141,17 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		}
 	case permission.Allow:
 		// proceed
+	}
+
+	// Run pre-tool hooks.
+	if e.hooks != nil {
+		hookResult := e.hooks.RunPreHooks(ctx, name, params)
+		if hookResult.Blocked {
+			return ToolResult{
+				Content: fmt.Sprintf("Blocked by hook: %s", hookResult.Message),
+				IsError: true,
+			}
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, e.defaultTimeout)
@@ -178,6 +202,11 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		result.Truncated = true
 	}
 
+	// Run post-tool hooks (failures are silently ignored).
+	if e.hooks != nil {
+		e.hooks.RunPostHooks(ctx, name, params, result.Content, result.IsError)
+	}
+
 	return result
 }
 
@@ -186,7 +215,7 @@ func toolOutputLimit(name string) int {
 	switch name {
 	case "read_file", "grep", "bash", "web_fetch", "web_search":
 		return 32 * 1024 // 32KB ~8K tokens
-	case "git_diff", "git_status", "list_dir", "glob":
+	case "git_diff", "git_status", "git_log", "git_branch", "list_dir", "glob":
 		return 16 * 1024 // 16KB
 	default: // edit_file, write_file, git_commit, git_push, etc.
 		return 4 * 1024 // 4KB

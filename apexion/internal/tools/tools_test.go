@@ -14,12 +14,12 @@ import (
 // --- Registry tests ---
 
 func TestDefaultRegistry_AllToolsRegistered(t *testing.T) {
-	r := DefaultRegistry(nil)
+	r := DefaultRegistry(nil, nil)
 	expected := []string{
-		"bash", "edit_file", "git_commit", "git_diff", "git_push",
-		"git_status", "glob", "grep", "list_dir", "question",
-		"read_file", "task", "todo_read", "todo_write",
-		"web_fetch", "web_search", "write_file",
+		"bash", "edit_file", "git_branch", "git_commit", "git_diff",
+		"git_log", "git_push", "git_status", "glob", "grep",
+		"list_dir", "question", "read_file", "task", "todo_read",
+		"todo_write", "web_fetch", "web_search", "write_file",
 	}
 	all := r.All()
 	if len(all) != len(expected) {
@@ -298,7 +298,7 @@ func TestExecutor_UnknownTool(t *testing.T) {
 }
 
 func TestExecutor_PolicyDeny(t *testing.T) {
-	r := DefaultRegistry(nil)
+	r := DefaultRegistry(nil, nil)
 	e := NewExecutor(r, &denyAllPolicy{})
 
 	params, _ := json.Marshal(map[string]any{"command": "echo hi"})
@@ -316,7 +316,7 @@ func TestExecutor_ReadFile(t *testing.T) {
 	path := filepath.Join(tmp, "test.txt")
 	os.WriteFile(path, []byte("content here\n"), 0644)
 
-	r := DefaultRegistry(nil)
+	r := DefaultRegistry(nil, nil)
 	e := NewExecutor(r, &allowAllPolicy{})
 
 	params, _ := json.Marshal(map[string]any{"path": path})

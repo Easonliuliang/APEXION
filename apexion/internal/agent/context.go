@@ -111,11 +111,15 @@ func candidatePaths(cwd, gitRoot string) []string {
 	if gitRoot != "" && gitRoot != cwd {
 		add(filepath.Join(gitRoot, ".apexion", "context.md"))
 		add(filepath.Join(gitRoot, "APEXION.md"))
+		add(filepath.Join(gitRoot, "AGENTS.md"))
+		add(filepath.Join(gitRoot, ".agents.md"))
 	}
 
 	// 3. Current working directory context (highest priority)
 	add(filepath.Join(cwd, ".apexion", "context.md"))
 	add(filepath.Join(cwd, "APEXION.md"))
+	add(filepath.Join(cwd, "AGENTS.md"))
+	add(filepath.Join(cwd, ".agents.md"))
 
 	return paths
 }

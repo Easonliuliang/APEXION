@@ -19,11 +19,17 @@ const (
 // mode is "explore" (default) or "plan".
 type SubAgentRunner func(ctx context.Context, prompt string, mode string) (string, error)
 
+// BackgroundLauncher launches sub-agents as background tasks.
+type BackgroundLauncher interface {
+	Launch(ctx context.Context, prompt, mode string, runner SubAgentRunner) (string, error)
+}
+
 // TaskTool spawns a sub-agent to perform tasks without polluting
 // the main conversation context. Supports explore, plan, and code modes.
 type TaskTool struct {
-	runner    SubAgentRunner
-	confirmer Confirmer // injected for code mode confirmation
+	runner     SubAgentRunner
+	confirmer  Confirmer          // injected for code mode confirmation
+	bgLauncher BackgroundLauncher // injected for background mode
 }
 
 func (t *TaskTool) Name() string     { return "task" }
@@ -58,6 +64,10 @@ func (t *TaskTool) Parameters() map[string]any {
 			"description": "Sub-agent mode: 'explore' (read-only research, default), 'plan' (read-only, structured plan), 'code' (can modify files and run commands).",
 			"enum":        []string{"explore", "plan", "code"},
 		},
+		"run_in_background": map[string]any{
+			"type":        "boolean",
+			"description": "If true, the sub-agent runs asynchronously in the background. Returns immediately with a task ID. Use /bg to check status.",
+		},
 	}
 }
 
@@ -72,10 +82,16 @@ func (t *TaskTool) SetConfirmer(c Confirmer) {
 	t.confirmer = c
 }
 
+// SetBGLauncher injects the background launcher for async execution.
+func (t *TaskTool) SetBGLauncher(bl BackgroundLauncher) {
+	t.bgLauncher = bl
+}
+
 func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (ToolResult, error) {
 	var p struct {
-		Prompt string `json:"prompt"`
-		Mode   string `json:"mode"`
+		Prompt          string `json:"prompt"`
+		Mode            string `json:"mode"`
+		RunInBackground bool   `json:"run_in_background"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return ToolResult{}, fmt.Errorf("invalid params: %w", err)
@@ -85,6 +101,15 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (ToolRes
 	}
 	if p.Mode == "" {
 		p.Mode = "explore"
+	}
+
+	// Background mode: launch async and return immediately.
+	if p.RunInBackground && t.bgLauncher != nil {
+		id, err := t.bgLauncher.Launch(ctx, p.Prompt, p.Mode, t.runner)
+		if err != nil {
+			return ToolResult{Content: fmt.Sprintf("Failed to launch background agent: %v", err), IsError: true}, nil
+		}
+		return ToolResult{Content: fmt.Sprintf("Background agent launched: %s\nUse /bg to check status, /bg collect %s to get output.", id, id)}, nil
 	}
 
 	// Code mode requires user confirmation since the sub-agent can modify files.

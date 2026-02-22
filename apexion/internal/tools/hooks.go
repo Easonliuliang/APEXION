@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -18,8 +19,11 @@ import (
 type HookEvent string
 
 const (
-	HookPreTool  HookEvent = "pre_tool"
-	HookPostTool HookEvent = "post_tool"
+	HookPreTool      HookEvent = "pre_tool"
+	HookPostTool     HookEvent = "post_tool"
+	HookSessionStart HookEvent = "session_start"
+	HookSessionStop  HookEvent = "session_stop"
+	HookNotification HookEvent = "notification"
 )
 
 // HookEntry is a single hook definition from configuration.
@@ -33,15 +37,21 @@ type HookEntry struct {
 // HooksConfig represents the hooks configuration file.
 type HooksConfig struct {
 	Hooks struct {
-		PreTool  []HookEntry `yaml:"pre_tool"`
-		PostTool []HookEntry `yaml:"post_tool"`
+		PreTool      []HookEntry `yaml:"pre_tool"`
+		PostTool     []HookEntry `yaml:"post_tool"`
+		SessionStart []HookEntry `yaml:"session_start"`
+		SessionStop  []HookEntry `yaml:"session_stop"`
+		Notification []HookEntry `yaml:"notification"`
 	} `yaml:"hooks"`
 }
 
 // HookManager loads and executes hooks.
 type HookManager struct {
-	preHooks  []HookEntry
-	postHooks []HookEntry
+	preHooks      []HookEntry
+	postHooks     []HookEntry
+	sessionStart  []HookEntry
+	sessionStop   []HookEntry
+	notification  []HookEntry
 }
 
 // LoadHooks loads hook configuration from .apexion/hooks.yaml and ~/.config/apexion/hooks.yaml.
@@ -86,6 +96,29 @@ func LoadHooks(cwd string) *HookManager {
 				hm.postHooks = append(hm.postHooks, *h)
 			}
 		}
+
+		// Lifecycle hooks don't use matcher — they always fire.
+		for i := range cfg.Hooks.SessionStart {
+			h := &cfg.Hooks.SessionStart[i]
+			if h.Timeout <= 0 {
+				h.Timeout = 10
+			}
+			hm.sessionStart = append(hm.sessionStart, *h)
+		}
+		for i := range cfg.Hooks.SessionStop {
+			h := &cfg.Hooks.SessionStop[i]
+			if h.Timeout <= 0 {
+				h.Timeout = 10
+			}
+			hm.sessionStop = append(hm.sessionStop, *h)
+		}
+		for i := range cfg.Hooks.Notification {
+			h := &cfg.Hooks.Notification[i]
+			if h.Timeout <= 0 {
+				h.Timeout = 10
+			}
+			hm.notification = append(hm.notification, *h)
+		}
 	}
 
 	return hm
@@ -93,7 +126,76 @@ func LoadHooks(cwd string) *HookManager {
 
 // HasHooks returns true if any hooks are configured.
 func (hm *HookManager) HasHooks() bool {
-	return len(hm.preHooks) > 0 || len(hm.postHooks) > 0
+	return len(hm.preHooks) > 0 || len(hm.postHooks) > 0 ||
+		len(hm.sessionStart) > 0 || len(hm.sessionStop) > 0 ||
+		len(hm.notification) > 0
+}
+
+// RunLifecycleHooks runs hooks for a lifecycle event (session_start, session_stop, notification).
+// Data is passed as JSON on stdin. Failures are silently ignored.
+func (hm *HookManager) RunLifecycleHooks(ctx context.Context, event HookEvent, data map[string]string) {
+	var hooks []HookEntry
+	switch event {
+	case HookSessionStart:
+		hooks = hm.sessionStart
+	case HookSessionStop:
+		hooks = hm.sessionStop
+	case HookNotification:
+		hooks = hm.notification
+	default:
+		return
+	}
+
+	for _, hook := range hooks {
+		input := HookInput{
+			ToolName: string(event),
+		}
+		if data != nil {
+			raw, _ := json.Marshal(data)
+			input.Params = raw
+		}
+		_ = runHookCommand(ctx, hook, input)
+	}
+}
+
+// Summary returns a human-readable listing of all configured hooks.
+func (hm *HookManager) Summary() string {
+	type namedHooks struct {
+		name  string
+		hooks []HookEntry
+	}
+	groups := []namedHooks{
+		{"pre_tool", hm.preHooks},
+		{"post_tool", hm.postHooks},
+		{"session_start", hm.sessionStart},
+		{"session_stop", hm.sessionStop},
+		{"notification", hm.notification},
+	}
+
+	total := 0
+	for _, g := range groups {
+		total += len(g.hooks)
+	}
+	if total == 0 {
+		return "No hooks configured.\nPlace hooks.yaml in .apexion/ or ~/.config/apexion/"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Configured hooks (%d):\n", total))
+	for _, g := range groups {
+		if len(g.hooks) == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("\n  %s (%d):\n", g.name, len(g.hooks)))
+		for _, h := range g.hooks {
+			matcher := h.Matcher
+			if matcher == "" {
+				matcher = "*"
+			}
+			sb.WriteString(fmt.Sprintf("    [%s] %s (timeout: %ds)\n", matcher, h.Command, h.Timeout))
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // HookInput is the JSON payload sent to hook stdin.

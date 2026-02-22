@@ -90,3 +90,6 @@ func (b *BufferIO) Confirm(_ string, _ string, _ tools.PermissionLevel) bool { r
 func (b *BufferIO) SystemMessage(_ string)                                    {}
 func (b *BufferIO) Error(_ string)                                            {}
 func (b *BufferIO) SetTokens(_ int)                                           {}
+func (b *BufferIO) SetContextInfo(_, _ int)                                   {}
+func (b *BufferIO) SetPlanMode(_ bool)                                        {}
+func (b *BufferIO) SetCost(_ float64)                                         {}

@@ -49,4 +49,15 @@ type IO interface {
 
 	// SetTokens updates the token counter shown in the status area.
 	SetTokens(n int)
+
+	// SetContextInfo updates the context window usage indicator.
+	// used is the number of prompt tokens from the last API call,
+	// total is the context window size.
+	SetContextInfo(used, total int)
+
+	// SetPlanMode updates the plan mode indicator in the status bar.
+	SetPlanMode(active bool)
+
+	// SetCost updates the dollar cost shown in the status bar.
+	SetCost(cost float64)
 }

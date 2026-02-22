@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/apexion-ai/apexion/internal/config"
 	"github.com/apexion-ai/apexion/internal/mcp"
 	"github.com/apexion-ai/apexion/internal/permission"
 	"github.com/apexion-ai/apexion/internal/provider"
+	"github.com/apexion-ai/apexion/internal/repomap"
 	"github.com/apexion-ai/apexion/internal/session"
 	"github.com/apexion-ai/apexion/internal/tools"
 	"github.com/apexion-ai/apexion/internal/tui"
@@ -80,6 +82,14 @@ type Agent struct {
 	planMode        bool
 	rules           []Rule
 	skills          []SkillInfo
+	hookManager     *tools.HookManager
+	eventLogger     *EventLogger
+	checkpointMgr   *CheckpointManager
+	costTracker     *CostTracker
+	repoMap         *repomap.RepoMap
+	bgManager       *BackgroundManager
+	architectNext   bool // next prompt uses architect mode
+	architectAuto   bool // architect auto-execute
 }
 
 // New creates a new Agent with the given IO implementation.
@@ -103,6 +113,18 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 		base += ctx
 	}
 
+	// Initialize cost tracker with optional user pricing overrides.
+	var costOverrides map[string]ModelPricing
+	if len(cfg.CostPricing) > 0 {
+		costOverrides = make(map[string]ModelPricing, len(cfg.CostPricing))
+		for model, entry := range cfg.CostPricing {
+			costOverrides[model] = ModelPricing{
+				InputPerMillion:  entry.InputPerMillion,
+				OutputPerMillion: entry.OutputPerMillion,
+			}
+		}
+	}
+
 	a := &Agent{
 		provider:       p,
 		executor:       exec,
@@ -115,7 +137,19 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 		customCommands: loadCustomCommands(cwd),
 		rules:          loadRules(cwd),
 		skills:         loadSkills(cwd),
+		costTracker:    NewCostTracker(costOverrides),
 	}
+
+	// Initialize repo map (async build in background).
+	if !cfg.RepoMap.Disabled {
+		maxTokens := cfg.RepoMap.MaxTokens
+		if maxTokens <= 0 {
+			maxTokens = 4096
+		}
+		a.repoMap = repomap.New(cwd, maxTokens, cfg.RepoMap.Exclude)
+		go a.repoMap.Build()
+	}
+
 	a.rebuildSystemPrompt()
 	a.wireTaskTool()
 	return a
@@ -136,6 +170,11 @@ func (a *Agent) SetMemoryStore(ms session.MemoryStore) {
 // SetMCPManager injects the MCP manager for /mcp command and status display.
 func (a *Agent) SetMCPManager(m *mcp.Manager) {
 	a.mcpManager = m
+}
+
+// SetHookManager injects the hook manager for lifecycle hooks and /hooks command.
+func (a *Agent) SetHookManager(hm *tools.HookManager) {
+	a.hookManager = hm
 }
 
 // rebuildSystemPrompt appends a dynamic identity suffix and persistent memories to basePrompt.
@@ -166,6 +205,13 @@ func (a *Agent) rebuildSystemPrompt() {
 		}
 	}
 
+	// Inject repo map if available and built.
+	if a.repoMap != nil && a.repoMap.IsBuilt() {
+		if mapContent := a.repoMap.Render(0); mapContent != "" {
+			a.systemPrompt += "\n\n<repo_map>\n" + mapContent + "</repo_map>"
+		}
+	}
+
 	// List available skills so the LLM knows what it can load.
 	if len(a.skills) > 0 {
 		a.systemPrompt += "\n\nAvailable project skills (load with read_file tool when you need detailed knowledge):"
@@ -181,6 +227,29 @@ func (a *Agent) rebuildSystemPrompt() {
 
 // Run starts the interactive REPL loop.
 func (a *Agent) Run(ctx context.Context) error {
+	// Initialize event logger.
+	if el, err := NewEventLogger(a.session.ID); err == nil {
+		a.eventLogger = el
+		defer a.eventLogger.Close()
+		a.eventLogger.Log(EventSessionStart, map[string]string{
+			"session_id": a.session.ID,
+		})
+	}
+
+	// Initialize checkpoint manager.
+	a.checkpointMgr = NewCheckpointManager(10)
+
+	// Initialize background agent manager.
+	a.bgManager = NewBackgroundManager(4, a.io)
+	a.wireBGLauncher()
+
+	// Fire session_start hooks.
+	if a.hookManager != nil {
+		a.hookManager.RunLifecycleHooks(ctx, tools.HookSessionStart, map[string]string{
+			"session_id": a.session.ID,
+		})
+	}
+
 	for {
 		input, err := a.io.ReadInput()
 		if err != nil {
@@ -204,6 +273,18 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		}
 
+		// Check if architect mode is pending for this prompt.
+		if a.architectNext {
+			a.architectNext = false
+			a.io.UserMessage(input)
+			am := NewArchitectMode(a, a.config.Architect.ArchitectModel, a.config.Architect.CoderModel, a.architectAuto)
+			if err := am.Run(ctx, input); err != nil {
+				a.io.Error(err.Error())
+			}
+			a.architectAuto = false
+			continue
+		}
+
 		a.io.UserMessage(input)
 		a.session.AddMessage(provider.Message{
 			Role: provider.RoleUser,
@@ -213,6 +294,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			}},
 		})
 
+		if a.eventLogger != nil {
+			a.eventLogger.Log(EventUserMessage, map[string]string{"text": input})
+		}
+
 		if err := a.runAgentLoop(ctx); err != nil {
 			if ctx.Err() != nil {
 				a.io.SystemMessage("\nInterrupted.")
@@ -221,11 +306,47 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			a.io.Error(err.Error())
 		}
+
+		// Fire notification hooks after each agent turn completes.
+		if a.hookManager != nil {
+			a.hookManager.RunLifecycleHooks(ctx, tools.HookNotification, map[string]string{
+				"session_id": a.session.ID,
+			})
+		}
+	}
+
+	// Wait for background agents before exiting.
+	if a.bgManager != nil && a.bgManager.RunningCount() > 0 {
+		a.io.SystemMessage("Waiting for background agents to complete...")
+		a.bgManager.WaitAll(ctx)
 	}
 
 	// Show file change summary on exit if any files were modified.
 	if changes := a.executor.FileTracker().Summary(); changes != "" {
 		a.io.SystemMessage("\n--- Session file changes ---\n" + changes)
+	}
+
+	// Fire session_stop hooks.
+	if a.hookManager != nil {
+		a.hookManager.RunLifecycleHooks(ctx, tools.HookSessionStop, map[string]string{
+			"session_id": a.session.ID,
+		})
+	}
+
+	// Auto-extract memories from the conversation.
+	if a.memoryStore != nil && len(a.session.Messages) > 5 {
+		extractor := NewAutoMemoryExtractor(a.provider, a.memoryStore, a.config.SubAgentModel)
+		if n, err := extractor.Extract(ctx, a.session.Messages, a.session.ID); err == nil && n > 0 {
+			a.io.SystemMessage(fmt.Sprintf("Auto-extracted %d memories from this session.", n))
+		}
+	}
+
+	// Log session end.
+	if a.eventLogger != nil {
+		a.eventLogger.Log(EventSessionEnd, map[string]string{
+			"session_id":  a.session.ID,
+			"tokens_used": fmt.Sprintf("%d", a.session.TokensUsed),
+		})
 	}
 
 	_ = a.store.Save(a.session)
@@ -269,8 +390,20 @@ func (a *Agent) handleSlashCommand(ctx context.Context, input string) (bool, boo
 		a.io.SystemMessage(formatHistory(a.session.Messages))
 		return true, false
 	case "/cost":
-		a.io.SystemMessage(fmt.Sprintf("Tokens used: %d", a.session.TokensUsed))
+		if a.costTracker != nil {
+			a.io.SystemMessage(a.costTracker.Summary())
+		} else {
+			a.io.SystemMessage(fmt.Sprintf("Tokens used: %d", a.session.TokensUsed))
+		}
 		return true, false
+	case "/test":
+		return a.handleTest(arg), false
+	case "/map":
+		return a.handleMap(arg), false
+	case "/architect":
+		return a.handleArchitect(arg), false
+	case "/bg":
+		return a.handleBG(arg), false
 	case "/compact":
 		return a.handleCompact(ctx), false
 	case "/help":
@@ -313,6 +446,24 @@ func (a *Agent) handleSlashCommand(ctx context.Context, input string) (bool, boo
 		return a.handleSkills(), false
 	case "/audit":
 		return a.handleAudit(), false
+	case "/hooks":
+		return a.handleHooks(), false
+	case "/events":
+		return a.handleEvents(arg), false
+	case "/checkpoint":
+		return a.handleCheckpoint(arg), false
+	case "/rollback":
+		return a.handleRollback(arg), false
+	case "/checkpoints":
+		return a.handleCheckpoints(), false
+	case "/autocommit":
+		a.config.AutoCommit = !a.config.AutoCommit
+		if a.config.AutoCommit {
+			a.io.SystemMessage("Auto-commit ON — file edits will be committed automatically.")
+		} else {
+			a.io.SystemMessage("Auto-commit OFF.")
+		}
+		return true, false
 	default:
 		// Check custom commands.
 		name := strings.TrimPrefix(cmd, "/")
@@ -396,6 +547,21 @@ func (a *Agent) handleHelp() bool {
   /memory delete <id> Delete a memory
   /mcp               Show MCP server connection status
   /mcp reset         Reconnect all MCP servers
+  /hooks             List configured hooks
+  /autocommit        Toggle auto-commit on/off
+  /checkpoint [msg]  Create a checkpoint (git stash snapshot)
+  /rollback [id]     Rollback to a checkpoint
+  /checkpoints       List checkpoints
+  /test <file>       Run configured test command for a file
+  /map               Show repository map (function/type signatures)
+  /map refresh       Rebuild the repository map
+  /architect         Next prompt uses architect mode (big model plans, small executes)
+  /architect auto    Architect mode with auto-execution
+  /bg                List background agents
+  /bg collect [id]   Collect completed agent output
+  /bg cancel <id>    Cancel a running background agent
+  /bg wait           Wait for all background agents
+  /events [n]        Show recent event log entries
   /audit             Show bash command audit log
   /save              Save current session to disk
   /sessions          List saved sessions
@@ -956,6 +1122,256 @@ func CustomCommandItems(cwd string) []tui.SlashMenuItem {
 	return items
 }
 
+func (a *Agent) handleEvents(arg string) bool {
+	if a.eventLogger == nil {
+		a.io.SystemMessage("Event logging not available.")
+		return true
+	}
+	n := 20
+	if arg != "" {
+		if parsed, err := strconv.Atoi(arg); err == nil && parsed > 0 {
+			n = parsed
+		}
+	}
+	events, err := a.eventLogger.ReadRecent(n)
+	if err != nil {
+		a.io.Error("Failed to read events: " + err.Error())
+		return true
+	}
+	a.io.SystemMessage(FormatEvents(events, "Recent events"))
+	return true
+}
+
+func (a *Agent) handleCheckpoint(label string) bool {
+	if a.checkpointMgr == nil {
+		a.io.SystemMessage("Checkpoint system not available.")
+		return true
+	}
+	if label == "" {
+		label = "manual checkpoint"
+	}
+	cp, err := a.checkpointMgr.Create(context.Background(), label)
+	if err != nil {
+		a.io.Error("Checkpoint failed: " + err.Error())
+		return true
+	}
+	a.io.SystemMessage(fmt.Sprintf("Checkpoint created: %s — %s", cp.ID, cp.Label))
+	return true
+}
+
+func (a *Agent) handleRollback(id string) bool {
+	if a.checkpointMgr == nil {
+		a.io.SystemMessage("Checkpoint system not available.")
+		return true
+	}
+	err := a.checkpointMgr.Rollback(context.Background(), id)
+	if err != nil {
+		a.io.Error("Rollback failed: " + err.Error())
+		return true
+	}
+	target := id
+	if target == "" {
+		target = "latest"
+	}
+	a.io.SystemMessage(fmt.Sprintf("Rolled back to checkpoint: %s", target))
+	return true
+}
+
+func (a *Agent) handleCheckpoints() bool {
+	if a.checkpointMgr == nil {
+		a.io.SystemMessage("Checkpoint system not available.")
+		return true
+	}
+	list := a.checkpointMgr.List()
+	if len(list) == 0 {
+		a.io.SystemMessage("No checkpoints.\nUse /checkpoint [label] to create one.")
+		return true
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Checkpoints (%d):\n", len(list)))
+	for _, cp := range list {
+		sb.WriteString(fmt.Sprintf("  %s  %s  %s\n",
+			cp.ID,
+			cp.CreatedAt.Format("15:04:05"),
+			cp.Label,
+		))
+	}
+	a.io.SystemMessage(strings.TrimRight(sb.String(), "\n"))
+	return true
+}
+
+func (a *Agent) handleHooks() bool {
+	if a.hookManager == nil {
+		a.io.SystemMessage("No hooks loaded.\nPlace hooks.yaml in .apexion/ or ~/.config/apexion/")
+		return true
+	}
+	a.io.SystemMessage(a.hookManager.Summary())
+	return true
+}
+
+func (a *Agent) handleTest(arg string) bool {
+	if arg == "" {
+		a.io.SystemMessage("Usage: /test <file_path>\nRuns the configured test command for the file.")
+		return true
+	}
+	tr := tools.NewTestRunner(a.config.Test)
+	if tr == nil {
+		a.io.SystemMessage("Test runner not configured.\nAdd test commands to config.yaml:\n  test:\n    enabled: true\n    commands:\n      \".go\": \"go test ./... -count=1\"")
+		return true
+	}
+	output, passed, err := tr.Run(context.Background(), arg)
+	if err != nil {
+		a.io.Error("Test error: " + err.Error())
+	} else if passed {
+		a.io.SystemMessage("Tests passed.")
+	} else {
+		a.io.SystemMessage("Test failures:\n" + output)
+	}
+	return true
+}
+
+func (a *Agent) handleMap(arg string) bool {
+	if a.repoMap == nil {
+		a.io.SystemMessage("Repo map is disabled.\nEnable in config.yaml:\n  repo_map:\n    disabled: false")
+		return true
+	}
+
+	if arg == "refresh" {
+		a.io.SystemMessage("Refreshing repo map...")
+		go func() {
+			if err := a.repoMap.Build(); err != nil {
+				a.io.Error("Repo map refresh failed: " + err.Error())
+			} else {
+				a.rebuildSystemPrompt()
+				a.io.SystemMessage(fmt.Sprintf("Repo map refreshed: %d files, %d symbols.",
+					a.repoMap.FileCount(), a.repoMap.SymbolCount()))
+			}
+		}()
+		return true
+	}
+
+	if !a.repoMap.IsBuilt() {
+		a.io.SystemMessage("Repo map is still building...")
+		return true
+	}
+
+	content := a.repoMap.Render(0)
+	if content == "" {
+		a.io.SystemMessage("Repo map is empty (no supported files found).")
+	} else {
+		a.io.SystemMessage(fmt.Sprintf("Repo map (%d files, %d symbols):\n%s",
+			a.repoMap.FileCount(), a.repoMap.SymbolCount(), content))
+	}
+	return true
+}
+
+func (a *Agent) handleArchitect(arg string) bool {
+	a.architectNext = true
+	a.architectAuto = strings.TrimSpace(arg) == "auto"
+
+	if a.architectAuto {
+		a.io.SystemMessage("Architect mode (auto-execute): next prompt will use dual-model planning + execution.")
+	} else {
+		a.io.SystemMessage("Architect mode: next prompt will be analyzed by the architect model.\nYou'll review the plan before execution.")
+	}
+	return true
+}
+
+func (a *Agent) handleBG(arg string) bool {
+	if a.bgManager == nil {
+		a.io.SystemMessage("Background agent manager not available.")
+		return true
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(arg), " ", 2)
+	subcmd := ""
+	subarg := ""
+	if len(parts) > 0 {
+		subcmd = parts[0]
+	}
+	if len(parts) > 1 {
+		subarg = strings.TrimSpace(parts[1])
+	}
+
+	switch subcmd {
+	case "collect":
+		if subarg == "" {
+			// Collect all completed
+			results := a.bgManager.CollectAll()
+			if len(results) == 0 {
+				a.io.SystemMessage("No completed background agents to collect.")
+				return true
+			}
+			for _, r := range results {
+				if r.Error != "" {
+					a.io.SystemMessage(fmt.Sprintf("[%s] Error: %s\n%s", r.ID, r.Error, r.Output))
+				} else {
+					a.io.SystemMessage(fmt.Sprintf("[%s] Output:\n%s", r.ID, r.Output))
+				}
+				// Inject into conversation
+				a.session.AddMessage(provider.Message{
+					Role: provider.RoleUser,
+					Content: []provider.Content{{
+						Type: provider.ContentTypeText,
+						Text: fmt.Sprintf("[Background agent %s output]\n%s", r.ID, r.Output),
+					}},
+				})
+			}
+		} else {
+			output, err := a.bgManager.Collect(subarg)
+			if err != nil {
+				a.io.Error(err.Error())
+				return true
+			}
+			a.io.SystemMessage(fmt.Sprintf("[%s] Output:\n%s", subarg, output))
+			a.session.AddMessage(provider.Message{
+				Role: provider.RoleUser,
+				Content: []provider.Content{{
+					Type: provider.ContentTypeText,
+					Text: fmt.Sprintf("[Background agent %s output]\n%s", subarg, output),
+				}},
+			})
+		}
+
+	case "cancel":
+		if subarg == "" {
+			a.io.Error("Usage: /bg cancel <id>")
+			return true
+		}
+		if err := a.bgManager.Cancel(subarg); err != nil {
+			a.io.Error(err.Error())
+		} else {
+			a.io.SystemMessage(fmt.Sprintf("Background agent %s cancelled.", subarg))
+		}
+
+	case "wait":
+		a.io.SystemMessage("Waiting for all background agents...")
+		a.bgManager.WaitAll(context.Background())
+		a.io.SystemMessage("All background agents completed.")
+
+	default:
+		a.io.SystemMessage(a.bgManager.Summary())
+	}
+
+	return true
+}
+
+// wireBGLauncher wires the background manager to the task tool.
+func (a *Agent) wireBGLauncher() {
+	if a.bgManager == nil {
+		return
+	}
+	t, ok := a.executor.Registry().Get("task")
+	if !ok {
+		return
+	}
+	tt, ok := t.(*tools.TaskTool)
+	if !ok {
+		return
+	}
+	tt.SetBGLauncher(a.bgManager)
+}
+
 // wireTaskTool finds the TaskTool in the registry and injects the sub-agent runner
 // and confirmer (for code mode).
 func (a *Agent) wireTaskTool() {
@@ -1015,6 +1431,10 @@ func (a *Agent) runSubAgent(ctx context.Context, prompt string, mode string) (st
 	subCfg := *a.config
 	subCfg.MaxIterations = 0
 	subCfg.SystemPrompt = sysPrompt
+	// Use dedicated sub-agent model if configured.
+	if a.config.SubAgentModel != "" {
+		subCfg.Model = a.config.SubAgentModel
+	}
 
 	sub := &Agent{
 		provider:   a.provider,

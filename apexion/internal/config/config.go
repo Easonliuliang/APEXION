@@ -86,6 +86,16 @@ type WebConfig struct {
 	SearchAPIKey string `yaml:"search_api_key"`
 }
 
+// SandboxConfig holds settings for bash tool sandboxing.
+type SandboxConfig struct {
+	// WorkDir restricts bash execution to this directory tree.
+	// Empty = current working directory (default).
+	WorkDir string `yaml:"work_dir"`
+
+	// AuditLog path for logging all bash commands. Empty = no logging.
+	AuditLog string `yaml:"audit_log"`
+}
+
 // Config is the complete configuration structure for apexion.
 type Config struct {
 	// Provider is the active provider name (e.g. "deepseek", "anthropic", "openai")
@@ -113,6 +123,68 @@ type Config struct {
 	// ContextWindow overrides the provider's default context window size.
 	// 0 = use provider default.
 	ContextWindow int `yaml:"context_window"`
+
+	// Sandbox holds settings for bash tool sandboxing.
+	Sandbox SandboxConfig `yaml:"sandbox"`
+
+	// AutoCommit enables automatic git commit after file edits.
+	AutoCommit bool `yaml:"auto_commit"`
+
+	// SubAgentModel overrides the model used for sub-agents (task tool).
+	// Empty = use same model as main agent.
+	SubAgentModel string `yaml:"sub_agent_model"`
+
+	// Lint holds configuration for automatic linting after file edits.
+	Lint LintConfig `yaml:"lint"`
+
+	// Test holds configuration for the self-healing test loop.
+	Test TestConfig `yaml:"test"`
+
+	// RepoMap holds configuration for repository map generation.
+	RepoMap RepoMapConfig `yaml:"repo_map"`
+
+	// Architect holds configuration for architect mode.
+	Architect ArchitectConfig `yaml:"architect"`
+
+	// CostPricing holds user-defined pricing overrides for cost tracking.
+	CostPricing map[string]CostPricingEntry `yaml:"cost_pricing"`
+
+	// AutoCheckpoint creates checkpoints before code sub-agents.
+	AutoCheckpoint bool `yaml:"auto_checkpoint"`
+}
+
+// LintConfig holds configuration for the lint-fix loop.
+type LintConfig struct {
+	Enabled  bool              `yaml:"enabled"`
+	Commands map[string]string `yaml:"commands"` // file extension → lint command ({{.file}} placeholder)
+	MaxFixes int               `yaml:"max_fixes"` // max auto-fix attempts per edit, default 3
+}
+
+// TestConfig holds configuration for the self-healing test loop.
+type TestConfig struct {
+	Enabled    bool              `yaml:"enabled"`
+	Commands   map[string]string `yaml:"commands"`    // file extension → test command ({{.file}} placeholder)
+	MaxRetries int               `yaml:"max_retries"` // max auto-fix attempts per edit, default 3
+}
+
+// RepoMapConfig holds configuration for repository map generation.
+type RepoMapConfig struct {
+	Disabled  bool     `yaml:"disabled"`
+	MaxTokens int      `yaml:"max_tokens"` // max tokens to inject into prompt, default 4096
+	Exclude   []string `yaml:"exclude"`    // glob patterns to exclude
+}
+
+// ArchitectConfig holds configuration for architect mode.
+type ArchitectConfig struct {
+	ArchitectModel string `yaml:"architect_model"` // big model for planning (empty = main model)
+	CoderModel     string `yaml:"coder_model"`     // small model for execution (empty = sub_agent_model)
+	AutoExecute    bool   `yaml:"auto_execute"`    // skip per-step confirmation
+}
+
+// CostPricingEntry is a user-defined pricing override for a model.
+type CostPricingEntry struct {
+	InputPerMillion  float64 `yaml:"input_per_million"`
+	OutputPerMillion float64 `yaml:"output_per_million"`
 }
 
 // DefaultConfig returns the default configuration.

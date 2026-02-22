@@ -96,6 +96,18 @@ func (t *TuiIO) SetTokens(n int) {
 	t.send(tokensMsg{n: n})
 }
 
+func (t *TuiIO) SetContextInfo(used, total int) {
+	t.send(contextInfoMsg{used: used, total: total})
+}
+
+func (t *TuiIO) SetPlanMode(active bool) {
+	t.send(planModeMsg{active: active})
+}
+
+func (t *TuiIO) SetCost(cost float64) {
+	t.send(costMsg{cost: cost})
+}
+
 // --- Questioner implementation ---
 
 func (t *TuiIO) AskQuestion(question string, options []string) (string, error) {

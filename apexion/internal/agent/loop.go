@@ -125,6 +125,16 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 						a.session.TokensUsed += event.Usage.InputTokens + event.Usage.OutputTokens
 						a.io.SetTokens(a.session.TokensUsed)
 						a.io.SetContextInfo(a.session.PromptTokens, contextWindow)
+
+						// Record cost if tracker is available.
+						if a.costTracker != nil {
+							model := a.config.Model
+							if model == "" {
+								model = a.provider.DefaultModel()
+							}
+							a.costTracker.RecordTurn(model, event.Usage.InputTokens, event.Usage.OutputTokens)
+							a.io.SetCost(a.costTracker.SessionCost())
+						}
 					}
 
 				case provider.EventError:
@@ -164,6 +174,11 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 
 		full := textContent.String()
 		a.io.TextDone(full)
+
+		// Log assistant text output.
+		if a.eventLogger != nil && full != "" {
+			a.eventLogger.Log(EventAssistantText, map[string]string{"text": full})
+		}
 
 		assistantMsg := buildAssistantMessage(full, toolCalls)
 		a.session.AddMessage(assistantMsg)
@@ -319,9 +334,24 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 
 // executeSingleToolCall handles the simple case of a single tool call (no concurrency).
 func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCallRequest) ([]provider.Content, bool) {
+	if a.eventLogger != nil {
+		a.eventLogger.Log(EventToolCall, map[string]any{
+			"tool_name": call.Name,
+			"tool_id":   call.ID,
+		})
+	}
+
 	a.io.ToolStart(call.ID, call.Name, string(call.Input))
 	result := a.executor.Execute(ctx, call.Name, call.Input)
 	a.io.ToolDone(call.ID, call.Name, result.Content, result.IsError)
+
+	if a.eventLogger != nil {
+		a.eventLogger.Log(EventToolResult, map[string]any{
+			"tool_name": call.Name,
+			"tool_id":   call.ID,
+			"is_error":  result.IsError,
+		})
+	}
 
 	var results []provider.Content
 	results = append(results, provider.Content{
@@ -403,6 +433,13 @@ func (a *Agent) maybeCompact(ctx context.Context, budget *session.TokenBudget) {
 		a.io.SystemMessage(fmt.Sprintf(
 			"Context compacted: %dk → %dk tokens. %d messages retained.",
 			before/1000, after/1000, len(a.session.Messages)))
+
+		if a.eventLogger != nil {
+			a.eventLogger.Log(EventCompaction, map[string]any{
+				"before_tokens": before,
+				"after_tokens":  after,
+			})
+		}
 	}
 }
 

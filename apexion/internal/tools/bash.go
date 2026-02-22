@@ -15,7 +15,12 @@ import (
 )
 
 // BashTool executes shell commands.
-type BashTool struct{}
+type BashTool struct {
+	// WorkDir restricts execution to this directory. Empty = cwd.
+	WorkDir string
+	// AuditLog path for logging commands. Empty = no logging.
+	AuditLog string
+}
 
 func (t *BashTool) Name() string                     { return "bash" }
 func (t *BashTool) IsReadOnly() bool                 { return false }
@@ -86,6 +91,8 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (ToolRes
 // timeout. If no new stdout/stderr is produced for idleTimeout, the process is
 // killed early instead of waiting for the full hard timeout.
 func (t *BashTool) runForeground(ctx context.Context, command string, timeout time.Duration) (ToolResult, error) {
+	t.logCommand(command)
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -94,6 +101,9 @@ func (t *BashTool) runForeground(ctx context.Context, command string, timeout ti
 	cmd.Stdin = nil
 	// Create a new process group so we can kill the entire tree.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if t.WorkDir != "" {
+		cmd.Dir = t.WorkDir
+	}
 
 	var buf safeBuffer
 	cmd.Stdout = &buf
@@ -200,10 +210,15 @@ func killProcessGroup(cmd *exec.Cmd) {
 // then returns partial output if the process is still running.
 // The process continues after this function returns.
 func (t *BashTool) runBackground(ctx context.Context, command string) (ToolResult, error) {
+	t.logCommand(command)
+
 	// exec.Command (not CommandContext) so the process outlives the tool call.
 	cmd := exec.Command(shellBin(), "-c", command)
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if t.WorkDir != "" {
+		cmd.Dir = t.WorkDir
+	}
 
 	var buf safeBuffer
 	cmd.Stdout = &buf
@@ -274,6 +289,20 @@ func (b *safeBuffer) String() string {
 
 // Ensure safeBuffer implements io.Writer.
 var _ io.Writer = (*safeBuffer)(nil)
+
+// logCommand appends a timestamped entry to the audit log file.
+func (t *BashTool) logCommand(command string) {
+	if t.AuditLog == "" {
+		return
+	}
+	f, err := os.OpenFile(t.AuditLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Fprintf(f, "[%s] %s\n", ts, command)
+}
 
 // shellBin returns the user's preferred shell, falling back to bash then sh.
 func shellBin() string {

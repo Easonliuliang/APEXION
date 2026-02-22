@@ -215,10 +215,13 @@ Flags:
 | `/model <name>` | Switch model at runtime |
 | `/provider <name>` | Switch provider at runtime |
 | `/config` | Show current configuration |
+| `/plan` | Toggle plan mode (read-only analysis) |
 | `/compact` | Manually trigger context compaction |
 | `/changes` | Show files modified in this session |
 | `/trust` | Show session-level tool approvals |
 | `/trust reset` | Clear all session approvals |
+| `/rules` | List loaded rules |
+| `/skills` | List available skills |
 | `/memory` | List saved memories |
 | `/memory add <text>` | Save a memory (use `#tag` to add tags) |
 | `/memory search <q>` | Search memories |
@@ -226,6 +229,7 @@ Flags:
 | `/mcp` | Show MCP server connection status |
 | `/mcp reset` | Reconnect all MCP servers |
 | `/commands` | List custom commands |
+| `/audit` | Show bash command audit log |
 | `/save` | Save current session |
 | `/sessions` | List saved sessions |
 | `/resume <id>` | Resume a saved session (short ID prefix) |
@@ -286,6 +290,53 @@ apexion supports MCP servers for extensibility. Create `~/.config/apexion/mcp.js
 
 Supports both **stdio** (child process) and **HTTP** (streamable) transports. Project-level config overrides global config. Use `/mcp` to check connection status.
 
+### Recommended MCP Servers
+
+#### Context7 — Up-to-date library documentation
+
+Provides current documentation for popular libraries, avoiding hallucinated or outdated API usage.
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
+```
+
+#### Sequential Thinking — Complex problem solving
+
+Helps with multi-step reasoning and complex architectural decisions.
+
+```json
+{
+  "mcpServers": {
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/sequential-thinking-mcp@latest"]
+    }
+  }
+}
+```
+
+#### Filesystem — Sandbox file access
+
+Provides sandboxed file access to a specific directory, useful for restricting operations.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+    }
+  }
+}
+```
+
 ---
 
 ## Custom Commands
@@ -307,6 +358,76 @@ Focus on correctness first, then readability.
 Then use it: `/review src/auth/handler.go`
 
 List all custom commands with `/commands`.
+
+---
+
+## Rules
+
+Define modular rules in `.apexion/rules/` or `~/.config/apexion/rules/` as markdown files:
+
+```markdown
+---
+description: "Go coding conventions"
+---
+- Use snake_case for file names
+- Always run `go vet` before committing
+- Prefer table-driven tests
+```
+
+Rules can optionally include `path_patterns` in frontmatter for scoped activation:
+
+```markdown
+---
+description: "Frontend rules"
+path_patterns:
+  - "*.tsx"
+  - "src/components/**"
+---
+Use functional components with hooks.
+```
+
+Rules without `path_patterns` are always active. Use `/rules` to list loaded rules.
+
+---
+
+## Skills
+
+Place domain knowledge files in `.apexion/skills/` or `~/.config/apexion/skills/` as markdown files. The LLM is informed of available skills and can load them on demand using `read_file`.
+
+```
+.apexion/skills/
+  go-patterns.md      # Go coding patterns for this project
+  api-design.md       # API design conventions
+  deployment.md       # Deployment procedures
+```
+
+Use `/skills` to list available skills.
+
+---
+
+## Plan Mode
+
+Toggle plan mode with `/plan`. In plan mode:
+
+- Only read-only tools are available (no file modifications, no bash)
+- The LLM analyzes and proposes a plan instead of executing
+- The status bar shows a "PLAN" indicator
+
+Use this to review the agent's approach before allowing execution.
+
+---
+
+## Sandbox
+
+Configure bash tool restrictions in `config.yaml`:
+
+```yaml
+sandbox:
+  work_dir: /path/to/project    # restrict bash to this directory
+  audit_log: /tmp/apexion.log   # log all bash commands
+```
+
+Use `/audit` to view recent bash commands from the audit log.
 
 ---
 

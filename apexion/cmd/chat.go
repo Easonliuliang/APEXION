@@ -48,6 +48,16 @@ func runChat() error {
 		executor.SetHooks(hm)
 	}
 
+	// Linter
+	if linter := tools.NewLinter(cfg.Lint); linter != nil {
+		executor.SetLinter(linter)
+	}
+
+	// Test runner
+	if tr := tools.NewTestRunner(cfg.Test); tr != nil {
+		executor.SetTestRunner(tr)
+	}
+
 	// MCP: load config, connect all servers, register tools
 	mcpCfg, _ := mcp.LoadMCPConfig(cwd)
 	var mcpMgr *mcp.Manager

@@ -99,6 +99,7 @@ func (p *PlainIO) SetTokens(n int) {
 
 func (p *PlainIO) SetContextInfo(_, _ int) {}
 func (p *PlainIO) SetPlanMode(_ bool)      {}
+func (p *PlainIO) SetCost(_ float64)       {}
 
 func (p *PlainIO) AskQuestion(question string, options []string) (string, error) {
 	fmt.Printf("\n? %s\n", question)

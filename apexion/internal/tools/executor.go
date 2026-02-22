@@ -39,8 +39,11 @@ type Executor struct {
 	defaultTimeout time.Duration
 	toolCanceller  ToolCanceller
 	tracker        *FileTracker
-	confirmMu      sync.Mutex    // serializes confirmation dialogs during parallel execution
-	hooks          *HookManager  // pre/post tool hooks (nil = no hooks)
+	confirmMu      sync.Mutex       // serializes confirmation dialogs during parallel execution
+	hooks          *HookManager     // pre/post tool hooks (nil = no hooks)
+	autoCommitter  *AutoCommitter   // auto-commit after file edits (nil = disabled)
+	linter         *Linter          // lint after file edits (nil = disabled)
+	testRunner     *TestRunner      // test after file edits (nil = disabled)
 }
 
 // NewExecutor creates a tool executor.
@@ -61,6 +64,26 @@ func (e *Executor) FileTracker() *FileTracker {
 // SetHooks injects the hook manager for pre/post tool hooks.
 func (e *Executor) SetHooks(hm *HookManager) {
 	e.hooks = hm
+}
+
+// SetAutoCommitter injects the auto-committer for automatic git commits after file edits.
+func (e *Executor) SetAutoCommitter(ac *AutoCommitter) {
+	e.autoCommitter = ac
+}
+
+// AutoCommitter returns the executor's auto-committer (may be nil).
+func (e *Executor) AutoCommitter() *AutoCommitter {
+	return e.autoCommitter
+}
+
+// SetLinter injects the linter for automatic linting after file edits.
+func (e *Executor) SetLinter(l *Linter) {
+	e.linter = l
+}
+
+// SetTestRunner injects the test runner for automatic testing after file edits.
+func (e *Executor) SetTestRunner(tr *TestRunner) {
+	e.testRunner = tr
 }
 
 // SetConfirmer injects the UI-layer confirmer (called after New to avoid
@@ -196,6 +219,35 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		trackFileChange(e.tracker, name, params, isNewFile)
 	}
 
+	// Run linter on successful file write/edit operations.
+	if !result.IsError && e.linter != nil && (name == "write_file" || name == "edit_file") {
+		filePath := extractFilePath(name, params)
+		if filePath != "" {
+			if lintOutput, hasErrors, lintErr := e.linter.Run(ctx, filePath); lintErr == nil && hasErrors {
+				result.Content += "\n\n[Lint errors]\n" + lintOutput
+			}
+		}
+	}
+
+	// Run tests on successful file write/edit operations (after lint, before auto-commit).
+	if !result.IsError && e.testRunner != nil && (name == "write_file" || name == "edit_file") {
+		filePath := extractFilePath(name, params)
+		if filePath != "" {
+			if testOutput, passed, testErr := e.testRunner.Run(ctx, filePath); testErr == nil && !passed {
+				result.Content += "\n\n[Test failures]\n" + testOutput +
+					"\n\nFix the test failures in the code you just edited."
+			}
+		}
+	}
+
+	// Auto-commit on successful file write/edit operations.
+	if !result.IsError && e.autoCommitter != nil && (name == "write_file" || name == "edit_file") {
+		filePath := extractFilePath(name, params)
+		if filePath != "" {
+			e.autoCommitter.TryCommit(ctx, filePath, name)
+		}
+	}
+
 	limit := toolOutputLimit(name)
 	if len(result.Content) > limit {
 		result.Content = truncateHeadTail(result.Content, limit)
@@ -220,6 +272,17 @@ func toolOutputLimit(name string) int {
 	default: // edit_file, write_file, git_commit, git_push, etc.
 		return 4 * 1024 // 4KB
 	}
+}
+
+// extractFilePath extracts the file_path parameter from write_file/edit_file params.
+func extractFilePath(toolName string, params json.RawMessage) string {
+	var p struct {
+		FilePath string `json:"file_path"`
+	}
+	if json.Unmarshal(params, &p) == nil {
+		return p.FilePath
+	}
+	return ""
 }
 
 // truncateHeadTail keeps the head (60%) and tail (40%) of a string,

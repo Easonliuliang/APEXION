@@ -17,6 +17,9 @@ var (
 	providerFlag string
 	maxTurnsFlag int
 	useTUI       bool
+	pipeMode     bool
+	outputFormat string
+	printLast    bool
 
 	// Package-level version info, set by Execute().
 	appVersion string
@@ -92,17 +95,8 @@ func initConfig() *config.Config {
 	return cfg
 }
 
-// providerBaseURLs maps OpenAI-compatible provider names to their base URLs.
-var providerBaseURLs = map[string]string{
-	"openai":   "https://api.openai.com/v1",
-	"deepseek": "https://api.deepseek.com",
-	"minimax":  "https://api.minimax.chat/v1",
-	"kimi":     "https://api.moonshot.cn/v1",
-	"qwen":     "https://dashscope.aliyuncs.com/compatible-mode/v1",
-	"glm":      "https://open.bigmodel.cn/api/paas/v4/",
-	"doubao":   "https://ark.cn-beijing.volces.com/api/v3",
-	"groq":     "https://api.groq.com/openai/v1",
-}
+// providerBaseURLs references the canonical map in the config package.
+var providerBaseURLs = config.KnownProviderBaseURLs
 
 // buildProvider creates a Provider instance based on configuration.
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
@@ -121,10 +115,15 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		)
 	}
 
-	// Determine model: CLI flag > config file > provider default (set later)
+	// Determine model: CLI flag > config file > provider defaults YAML
 	model := cfg.Model
 	if pc.Model != "" && model == "" {
 		model = pc.Model
+	}
+	if model == "" {
+		if m, ok := config.KnownProviderModels[name]; ok {
+			model = m
+		}
 	}
 
 	switch name {

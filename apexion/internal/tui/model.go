@@ -42,6 +42,9 @@ type confirmMsg struct {
 type systemMsg struct{ text string }
 type errorMsg struct{ text string }
 type tokensMsg struct{ n int }
+type contextInfoMsg struct{ used, total int }
+type planModeMsg struct{ active bool }
+type costMsg struct{ cost float64 }
 type agentDoneMsg struct{ err error }
 type toolTickMsg struct{}
 type subAgentProgressMsg struct{ progress SubAgentProgress }
@@ -146,6 +149,11 @@ var (
 				Foreground(lipgloss.Color("220")).
 				Bold(true)
 
+	statusPlanStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("235")).
+			Foreground(lipgloss.Color("45")).
+			Bold(true)
+
 	// Welcome box
 	welcomeBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
@@ -229,6 +237,10 @@ type Model struct {
 	quitting bool
 
 	tokens        int
+	contextUsed   int
+	contextTotal  int
+	planMode      bool
+	sessionCost   float64
 	toolName      string
 	toolStartTime time.Time
 
@@ -567,6 +579,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokensMsg:
 		m.tokens = msg.n
 
+	case contextInfoMsg:
+		m.contextUsed = msg.used
+		m.contextTotal = msg.total
+
+	case planModeMsg:
+		m.planMode = msg.active
+
+	case costMsg:
+		m.sessionCost = msg.cost
+
 	case agentDoneMsg:
 		m.quitting = true
 		return m, tea.Quit
@@ -759,8 +781,26 @@ func (m *Model) renderStatusBar() string {
 	if modelName == "" {
 		modelName = "unknown"
 	}
-	status := statusModelStyle.Render(" "+modelName) +
-		statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
+	status := statusModelStyle.Render(" " + modelName)
+
+	if m.planMode {
+		status += statusBarStyle.Render(" │ ") + statusPlanStyle.Render("PLAN")
+	}
+
+	if m.sessionCost > 0 {
+		if m.sessionCost < 0.01 {
+			status += statusBarStyle.Render(fmt.Sprintf(" │ $%.4f", m.sessionCost))
+		} else {
+			status += statusBarStyle.Render(fmt.Sprintf(" │ $%.2f", m.sessionCost))
+		}
+	}
+
+	status += statusBarStyle.Render(fmt.Sprintf(" │ tokens: %d", m.tokens))
+
+	if m.contextTotal > 0 {
+		pct := m.contextUsed * 100 / m.contextTotal
+		status += statusBarStyle.Render(fmt.Sprintf(" │ context: %d%%", pct))
+	}
 
 	switch m.spinnerKind {
 	case spinnerThinking:

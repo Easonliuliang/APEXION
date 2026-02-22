@@ -382,7 +382,7 @@ The provider interface emits a unified `Event` stream (`TextDelta`, `ToolCallDon
 
 ## Contributing
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a PR.
+Contributions are welcome!
 
 ```bash
 git clone https://github.com/Easonliuliang/APEXION

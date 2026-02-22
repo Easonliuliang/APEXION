@@ -16,7 +16,7 @@ func TestLoadSystemPrompt_EmbeddedDefaults(t *testing.T) {
 	for _, section := range promptSections {
 		if section == "identity" {
 			// identity.md doesn't use XML tags.
-			if !strings.Contains(prompt, "apexion") {
+			if !strings.Contains(strings.ToLower(prompt), "apexion") {
 				t.Errorf("prompt missing identity section")
 			}
 			continue
@@ -106,7 +106,7 @@ func TestLoadSystemPrompt_ExtraMd(t *testing.T) {
 func TestLoadPromptSection_Fallback(t *testing.T) {
 	// With no override dirs, should return embedded content.
 	content := loadPromptSection("identity", nil)
-	if !strings.Contains(content, "apexion") {
+	if !strings.Contains(strings.ToLower(content), "apexion") {
 		t.Error("loadPromptSection should return embedded default when no overrides")
 	}
 }

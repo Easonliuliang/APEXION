@@ -1,0 +1,6 @@
+# Internal docs and POC prototype (not part of release)
+/poc/
+/docs/
+
+# OS
+.DS_Store

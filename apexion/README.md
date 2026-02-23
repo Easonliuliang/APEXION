@@ -12,7 +12,7 @@ AI coding assistant in your terminal. Open-source, model-agnostic.
 
 ```
 $ apexion
-apexion v0.1.0 — deepseek (deepseek-chat)
+apexion v0.3.1 — deepseek (deepseek-chat)
 type your request, /help for commands, /quit to exit
 ──────────────────────────────────────────────────
 

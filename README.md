@@ -10,7 +10,7 @@ Like Claude Code, but built from scratch in Go — fast startup, tiny footprint,
 
 ```
 $ apexion
-apexion v0.1.0 — deepseek (deepseek-chat)
+apexion v0.3.1 — deepseek (deepseek-chat)
 type your request, /help for commands, /quit to exit
 ──────────────────────────────────────────────────
 

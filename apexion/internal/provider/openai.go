@@ -139,6 +139,17 @@ func (p *OpenAIProvider) processStream(ctx context.Context, stream *ssestream.St
 		choice := chunk.Choices[0]
 		delta := choice.Delta
 
+		// Skip reasoning_content from models like DeepSeek (not in SDK struct,
+		// extract from raw JSON). We silently discard it so thinking doesn't
+		// leak into the visible output.
+		if delta.Content == "" {
+			// Check if this chunk only carries reasoning_content (no visible text).
+			// No action needed — just don't emit it as text.
+			if rc := extractReasoningContent(delta.RawJSON()); rc != "" {
+				continue
+			}
+		}
+
 		// Text delta
 		if delta.Content != "" {
 			ch <- Event{Type: EventTextDelta, TextDelta: delta.Content}
@@ -320,4 +331,17 @@ func (p *OpenAIProvider) buildTools(tools []ToolSchema) []openai.ChatCompletionT
 		})
 	}
 	return result
+}
+
+// extractReasoningContent parses the raw JSON of a delta chunk to find a
+// "reasoning_content" field (used by DeepSeek and other reasoning models).
+// Returns the reasoning text if present, empty string otherwise.
+func extractReasoningContent(rawJSON string) string {
+	var raw struct {
+		ReasoningContent string `json:"reasoning_content"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &raw); err != nil {
+		return ""
+	}
+	return raw.ReasoningContent
 }

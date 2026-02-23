@@ -20,8 +20,9 @@ import (
 type readInputMsg struct{}
 
 type inputResult struct {
-	text string
-	err  error
+	text   string
+	images []ImageAttachment
+	err    error
 }
 
 type userMsg struct{ text string }
@@ -232,6 +233,8 @@ type Model struct {
 
 	inputCh chan inputResult
 
+	pendingImages []ImageAttachment
+
 	noiseDropCount int
 
 	quitting bool
@@ -367,6 +370,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// ── Ctrl+V: paste clipboard image ──
+		if s == "ctrl+v" && m.inputMode && !m.confirming && !m.questioning {
+			img, err := readClipboardImage()
+			if err == nil {
+				m.pendingImages = append(m.pendingImages, img)
+				n := len(m.pendingImages)
+				cur := m.textinput.Value()
+				m.textinput.SetValue(cur + fmt.Sprintf("[Image #%d] ", n))
+				m.textinput.CursorEnd()
+			}
+			return m, nil
+		}
+
 		switch s {
 		case "ctrl+c":
 			if m.questioning && m.questionCh != nil {
@@ -409,7 +425,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.inputMode {
 				text := strings.TrimSpace(m.textinput.Value())
 				m.textinput.SetValue("")
-				m.inputCh <- inputResult{text: text}
+
+				// Detect dragged/typed image paths in the input text.
+				paths, cleanText := detectImagePath(text)
+				for _, p := range paths {
+					if img, err := readImageBase64(p); err == nil {
+						m.pendingImages = append(m.pendingImages, img)
+					}
+				}
+
+				images := m.pendingImages
+				m.pendingImages = nil
+				m.inputCh <- inputResult{text: cleanText, images: images}
 				m.inputMode = false
 				m.textinput.Blur()
 			}

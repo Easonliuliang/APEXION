@@ -19,6 +19,8 @@ type TuiIO struct {
 	mu         sync.Mutex
 	cancelTool context.CancelFunc
 	cancelLoop context.CancelFunc
+
+	lastImages []ImageAttachment
 }
 
 var _ IO = (*TuiIO)(nil)
@@ -43,7 +45,22 @@ func (t *TuiIO) ReadInput() (string, error) {
 	if res.err != nil {
 		return "", io.EOF
 	}
+
+	// Store any attached images for the agent to pick up.
+	t.mu.Lock()
+	t.lastImages = res.images
+	t.mu.Unlock()
+
 	return res.text, nil
+}
+
+// PendingImages returns and clears images attached during the last ReadInput.
+func (t *TuiIO) PendingImages() []ImageAttachment {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	imgs := t.lastImages
+	t.lastImages = nil
+	return imgs
 }
 
 func (t *TuiIO) UserMessage(text string) {

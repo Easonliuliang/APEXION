@@ -61,3 +61,11 @@ type IO interface {
 	// SetCost updates the dollar cost shown in the status bar.
 	SetCost(cost float64)
 }
+
+// ImageInput is an optional interface that IO implementations can provide
+// to supply images attached by the user (via drag-and-drop or clipboard paste).
+// The agent checks for this with a type assertion; existing IO implementations
+// that don't support images are unaffected.
+type ImageInput interface {
+	PendingImages() []ImageAttachment
+}

@@ -6,6 +6,8 @@
 
 Like Claude Code, but built from scratch in Go — fast startup, tiny footprint, runs anywhere Go compiles.
 
+![apexion screenshot](apexion/docs/screenshot.png)
+
 ```
 $ apexion
 apexion v0.1.0 — deepseek (deepseek-chat)

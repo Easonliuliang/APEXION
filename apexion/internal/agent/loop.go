@@ -164,15 +164,16 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 				continue
 			}
 
-			// Stream error after content was received — can't retry safely.
+			// Stream error after content was received — save partial content and continue.
 			if streamErr != nil {
-				return fmt.Errorf("stream error: %w", streamErr)
+				a.io.SystemMessage(fmt.Sprintf("Connection lost: %s (partial response preserved)", truncateError(streamErr)))
+				break // exit retry loop, process whatever we received
 			}
 
 			break // success
 		}
 
-		full := textContent.String()
+		full := stripThinkTags(textContent.String())
 		a.io.TextDone(full)
 
 		// Log assistant text output.
@@ -450,6 +451,25 @@ func (a *Agent) currentTokens(budget *session.TokenBudget) int {
 		return a.session.PromptTokens
 	}
 	return a.session.EstimateTokens() + estimateTokens(a.systemPrompt)
+}
+
+// stripThinkTags removes <think>...</think> blocks that some models (e.g. MiniMax, DeepSeek)
+// include in their output. Handles partial tags from mid-stream disconnects.
+func stripThinkTags(s string) string {
+	for {
+		start := strings.Index(s, "<think>")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(s[start:], "</think>")
+		if end == -1 {
+			// Partial think block (e.g. stream cut off mid-think) — strip to end.
+			s = strings.TrimSpace(s[:start])
+			break
+		}
+		s = s[:start] + s[start+end+len("</think>"):]
+	}
+	return strings.TrimSpace(s)
 }
 
 // estimateTokens returns a rough token estimate for a string (chars / 4).

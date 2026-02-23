@@ -71,6 +71,7 @@ func skillDirs(cwd, gitRoot string) []string {
 
 	if home, err := os.UserHomeDir(); err == nil {
 		add(filepath.Join(home, ".config", "apexion", "skills"))
+		add(filepath.Join(home, ".claude", "skills"))
 	}
 
 	if gitRoot != "" && gitRoot != cwd {

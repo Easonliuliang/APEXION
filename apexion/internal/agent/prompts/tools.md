@@ -28,6 +28,12 @@ write_file
 - Never overwrite an existing file with write_file unless the user explicitly asks for a full rewrite.
 
 bash
+- For **codebase** file operations, prefer dedicated tools over bash:
+    File search → glob (NOT find, ls -R)
+    Content search → grep (NOT grep, rg, awk)
+    Read files → read_file (NOT cat, head, tail)
+  But for **general system queries** (e.g. listing directories outside the project, checking installed tools, system info), bash is the right choice.
+- Reserve bash for system commands: build, test, install, git, docker, etc.
 - Prefer targeted commands (e.g., go test ./internal/tools/...) over broad ones.
 - For commands with side effects, briefly state what the command does before running.
 - Default timeout is 30s. Set higher for slow operations like large test suites.

@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -27,7 +26,10 @@ func (t *BashTool) IsReadOnly() bool                 { return false }
 func (t *BashTool) PermissionLevel() PermissionLevel { return PermissionExecute }
 
 func (t *BashTool) Description() string {
-	return "Execute a shell command and return its combined stdout and stderr output. " +
+	return "IMPORTANT: Do NOT use bash for file operations — use the dedicated tools instead: " +
+		"glob (not find/ls), grep (not grep/rg/awk), read_file (not cat/head/tail). " +
+		"Reserve bash for system commands (build, test, install, git, docker, etc.). " +
+		"Execute a shell command and return its combined stdout and stderr output. " +
 		"stdin is disconnected (/dev/null) — interactive commands (input(), read, etc.) will fail. " +
 		"Do NOT pipe input to simulate interactivity (e.g. echo '1' | python script.py). " +
 		"For long-running processes (dev servers, watchers, etc.) that never exit, " +
@@ -37,8 +39,7 @@ func (t *BashTool) Description() string {
 const (
 	defaultBashTimeout = 120 * time.Second
 	maxBashTimeout     = 600 * time.Second
-	idleTimeout        = 30 * time.Second  // kill if no new output for this long
-	bgWarmupTimeout    = 10 * time.Second  // background mode: return after this if still running
+	bgWarmupTimeout    = 10 * time.Second // background mode: return after this if still running
 )
 
 func (t *BashTool) Parameters() map[string]any {
@@ -87,9 +88,8 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (ToolRes
 	return t.runForeground(ctx, p.Command, timeout)
 }
 
-// runForeground executes a command with both a hard timeout and an idle-output
-// timeout. If no new stdout/stderr is produced for idleTimeout, the process is
-// killed early instead of waiting for the full hard timeout.
+// runForeground executes a command with a hard timeout.
+// The process is killed when the timeout expires or the context is cancelled.
 func (t *BashTool) runForeground(ctx context.Context, command string, timeout time.Duration) (ToolResult, error) {
 	t.logCommand(command)
 
@@ -116,79 +116,47 @@ func (t *BashTool) runForeground(ctx context.Context, command string, timeout ti
 		}, nil
 	}
 
-	// Track last output time for idle detection.
-	var lastOutputTime atomic.Int64
-	lastOutputTime.Store(time.Now().UnixMilli())
-	buf.onWrite = func() {
-		lastOutputTime.Store(time.Now().UnixMilli())
-	}
-
 	// Wait for the process in a goroutine.
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	// Idle detection loop: check every second.
-	idleTicker := time.NewTicker(1 * time.Second)
-	defer idleTicker.Stop()
-
-	idledOut := false
-	for {
-		select {
-		case err := <-done:
-			// Process exited normally or with error.
-			result := buf.String()
-			if err != nil {
-				if ctx.Err() == context.DeadlineExceeded {
-					secs := int(timeout.Seconds())
-					return ToolResult{
-						Content: fmt.Sprintf("Command timed out after %dm%ds.\nOutput:\n%s",
-							secs/60, secs%60, result),
-						IsError: true,
-					}, nil
-				}
-				if ctx.Err() == context.Canceled {
-					return ToolResult{}, fmt.Errorf("cancelled")
-				}
+	select {
+	case err := <-done:
+		result := buf.String()
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				secs := int(timeout.Seconds())
 				return ToolResult{
-					Content: fmt.Sprintf("Exit error: %v\nOutput:\n%s", err, result),
+					Content: fmt.Sprintf("Command timed out after %dm%ds.\nOutput:\n%s",
+						secs/60, secs%60, result),
 					IsError: true,
 				}, nil
 			}
-			return ToolResult{Content: result}, nil
-
-		case <-idleTicker.C:
-			last := time.UnixMilli(lastOutputTime.Load())
-			if time.Since(last) >= idleTimeout {
-				// No output for too long — kill the process group.
-				idledOut = true
-				killProcessGroup(cmd)
-				// Let the done channel fire on the next iteration.
+			if ctx.Err() == context.Canceled {
+				return ToolResult{}, fmt.Errorf("cancelled")
 			}
-
-		case <-ctx.Done():
-			// Hard timeout or user cancel already handled via CommandContext,
-			// but ensure the process group is also killed.
-			killProcessGroup(cmd)
-			// Let the done channel fire on the next iteration.
-		}
-
-		if idledOut {
-			// Wait briefly for process to exit after kill.
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-			}
-			result := buf.String()
-			secs := int(idleTimeout.Seconds())
 			return ToolResult{
-				Content: fmt.Sprintf(
-					"Command killed: no output for %ds (idle timeout). "+
-						"The command may be waiting for input or sleeping. "+
-						"Do NOT retry with piped stdin — interactive commands are not supported.\n"+
-						"Output:\n%s", secs, result),
+				Content: fmt.Sprintf("Exit error: %v\nOutput:\n%s", err, result),
 				IsError: true,
 			}, nil
 		}
+		return ToolResult{Content: result}, nil
+
+	case <-ctx.Done():
+		// Hard timeout or user cancel — kill the entire process group.
+		killProcessGroup(cmd)
+		// Wait briefly for process to exit after kill.
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		result := buf.String()
+		secs := int(timeout.Seconds())
+		return ToolResult{
+			Content: fmt.Sprintf("Command timed out after %dm%ds.\nOutput:\n%s",
+				secs/60, secs%60, result),
+			IsError: true,
+		}, nil
 	}
 }
 

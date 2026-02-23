@@ -103,7 +103,7 @@ model: deepseek-chat
 providers:
   anthropic:
     api_key: sk-ant-...
-    model: claude-opus-4-5
+    model: claude-sonnet-4-6
 
   deepseek:
     api_key: sk-...
@@ -116,7 +116,7 @@ providers:
   qwen:
     api_key: sk-...
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model: qwen-max
+    model: qwen3-max
 
 # 0 = unlimited (default). Loop exits when model stops calling tools.
 # Set to a positive number as a safety cap.

@@ -116,7 +116,7 @@ model: deepseek-chat
 providers:
   anthropic:
     api_key: sk-ant-...
-    model: claude-opus-4-5
+    model: claude-sonnet-4-6
 
   deepseek:
     api_key: sk-...
@@ -129,7 +129,7 @@ providers:
   qwen:
     api_key: sk-...
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model: qwen-max
+    model: qwen3-max
 
 # 0 = unlimited (default). Loop exits when model stops calling tools.
 # Set to a positive number as a safety cap.
@@ -823,7 +823,7 @@ max_iterations: 0                     # max agent loop iterations (0 = unlimited
 providers:
   anthropic:
     api_key: sk-ant-...
-    model: claude-opus-4-5
+    model: claude-sonnet-4-6
   openai:
     api_key: sk-...
     model: gpt-4o
@@ -833,22 +833,22 @@ providers:
   qwen:
     api_key: sk-...
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model: qwen-max
+    model: qwen3-max
   kimi:
     api_key: sk-...
     base_url: https://api.moonshot.cn/v1
-    model: moonshot-v1-128k
+    model: kimi-k2.5
   glm:
     api_key: ...
     base_url: https://open.bigmodel.cn/api/paas/v4
-    model: glm-4
+    model: glm-5
   doubao:
     api_key: ...
     base_url: https://ark.cn-beijing.volces.com/api/v3
-    model: doubao-pro-32k
+    model: doubao-seed-2-0-pro
   groq:
     api_key: gsk_...
-    model: llama-3.1-70b-versatile
+    model: llama-3.3-70b-versatile
   ollama:
     base_url: http://localhost:11434/v1
     model: llama3.1

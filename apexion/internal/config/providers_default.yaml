@@ -3,7 +3,7 @@ openai:
   default_model: gpt-4o-mini
 
 anthropic:
-  default_model: claude-sonnet-4-20250514
+  default_model: claude-sonnet-4-6
 
 deepseek:
   base_url: https://api.deepseek.com
@@ -15,19 +15,19 @@ minimax:
 
 kimi:
   base_url: https://api.moonshot.cn/v1
-  default_model: moonshot-v1-auto
+  default_model: kimi-k2.5
 
 qwen:
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  default_model: qwen-plus
+  default_model: qwen3-max
 
 glm:
   base_url: https://open.bigmodel.cn/api/paas/v4/
-  default_model: glm-4-plus
+  default_model: glm-5
 
 doubao:
   base_url: https://ark.cn-beijing.volces.com/api/v3
-  default_model: doubao-1.5-pro-32k
+  default_model: doubao-seed-2-0-pro
 
 groq:
   base_url: https://api.groq.com/openai/v1

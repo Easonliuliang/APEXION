@@ -175,7 +175,7 @@ func runOnce(prompt string) error {
 
 	if useTUI {
 		tuiCfg := tui.TUIConfig{
-			Version:     appVersion,
+			Version:     displayVersion(),
 			Provider:    cfg.Provider,
 			Model:       cfg.Model,
 			ShowWelcome: false, // run mode: no welcome page

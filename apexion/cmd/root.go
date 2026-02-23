@@ -70,6 +70,16 @@ func Execute(version, commit, date string) {
 	}
 }
 
+// displayVersion returns a formatted version string for the TUI welcome page,
+// e.g. "v0.3.1 (abc1234)".
+func displayVersion() string {
+	v := "v" + appVersion
+	if appCommit != "" && appCommit != "none" {
+		v += " (" + appCommit + ")"
+	}
+	return v
+}
+
 // initConfig loads configuration, applying CLI flag overrides.
 func initConfig() *config.Config {
 	cfg, err := config.Load(cfgFile)

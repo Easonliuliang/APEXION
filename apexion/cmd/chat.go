@@ -108,7 +108,7 @@ func runChat() error {
 		}
 
 		tuiCfg := tui.TUIConfig{
-			Version:        appVersion,
+			Version:        displayVersion(),
 			Provider:       cfg.Provider,
 			Model:          cfg.Model,
 			SessionID:      sessionID,

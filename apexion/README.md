@@ -750,11 +750,11 @@ You can also set a hard cap via config (`max_iterations: 30`) or CLI flag (`--ma
 | Provider | Config key | Recommended model |
 |----------|-----------|------------------|
 | **DeepSeek** | `deepseek` | `deepseek-chat` |
-| **Qwen (Alibaba)** | `qwen` | `qwen-max` |
-| **Kimi (Moonshot)** | `kimi` | `moonshot-v1-128k` |
-| **GLM (Zhipu)** | `glm` | `glm-4` |
-| **Doubao (ByteDance)** | `doubao` | `doubao-pro-32k` |
-| **MiniMax** | `minimax` | `abab6.5-chat` |
+| **Qwen (Alibaba)** | `qwen` | `qwen3-max` |
+| **Kimi (Moonshot)** | `kimi` | `kimi-k2.5` |
+| **GLM (Zhipu)** | `glm` | `glm-5` |
+| **Doubao (ByteDance)** | `doubao` | `doubao-seed-2-0-pro` |
+| **MiniMax** | `minimax` | `MiniMax-M2.5` |
 
 All OpenAI-compatible providers share the same adapter — only `api_key` and `base_url` differ.
 

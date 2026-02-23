@@ -14,7 +14,8 @@ type ServerType string
 
 const (
 	ServerTypeStdio ServerType = "stdio" // child process stdin/stdout
-	ServerTypeHTTP  ServerType = "http"  // Streamable HTTP
+	ServerTypeHTTP  ServerType = "http"  // Streamable HTTP (2025-03-26 spec)
+	ServerTypeSSE   ServerType = "sse"   // SSE transport (2024-11-05 spec, legacy but widely used)
 )
 
 // ServerConfig holds connection settings for a single MCP server.

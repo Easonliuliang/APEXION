@@ -167,6 +167,8 @@ func (m *Manager) Close() {
 // ── serverConn internal methods ──────────────────────────────────────────────
 
 // connect establishes a connection and caches the tool list (idempotent: skips if already connected).
+// When a URL-based config has no explicit type, it tries Streamable HTTP first,
+// then falls back to SSE (many existing servers still use the 2024-11-05 SSE protocol).
 func (conn *serverConn) connect(ctx context.Context) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -176,13 +178,35 @@ func (conn *serverConn) connect(ctx context.Context) error {
 		return nil
 	}
 
+	// Determine if we should try auto-detection (URL present, no explicit type).
+	autoDetect := conn.config.URL != "" && conn.config.Type == ""
+
 	transport, err := buildTransport(conn.config)
 	if err != nil {
 		return err
 	}
 
 	session, err := conn.client.Connect(ctx, transport, nil)
-	if err != nil {
+	if err != nil && autoDetect {
+		// Streamable HTTP failed — try SSE fallback.
+		// Create a fresh client for the SSE attempt (Connect is one-shot).
+		conn.client = mcp.NewClient(&mcp.Implementation{
+			Name:    "apexion",
+			Version: "1.0.0",
+		}, nil)
+		sseCfg := conn.config
+		sseCfg.Type = ServerTypeSSE
+		sseTransport, sseErr := buildTransport(sseCfg)
+		if sseErr != nil {
+			return fmt.Errorf("connect (streamable HTTP failed: %v; SSE build failed: %v)", err, sseErr)
+		}
+		session, sseErr = conn.client.Connect(ctx, sseTransport, nil)
+		if sseErr != nil {
+			return fmt.Errorf("connect failed (tried streamable HTTP: %v; SSE: %v)", err, sseErr)
+		}
+		// SSE succeeded — remember for future reconnects.
+		conn.config.Type = ServerTypeSSE
+	} else if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	conn.session = session
@@ -248,6 +272,21 @@ func buildTransport(cfg ServerConfig) (mcp.Transport, error) {
 			return nil, fmt.Errorf("http transport requires 'url'")
 		}
 		t := &mcp.StreamableClientTransport{Endpoint: cfg.URL}
+		if len(cfg.Headers) > 0 {
+			t.HTTPClient = &http.Client{
+				Transport: &headerRoundTripper{
+					base:    http.DefaultTransport,
+					headers: cfg.Headers,
+				},
+			}
+		}
+		return t, nil
+
+	case ServerTypeSSE:
+		if cfg.URL == "" {
+			return nil, fmt.Errorf("sse transport requires 'url'")
+		}
+		t := &mcp.SSEClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
 			t.HTTPClient = &http.Client{
 				Transport: &headerRoundTripper{

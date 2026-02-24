@@ -384,6 +384,14 @@ apexion supports MCP servers for extensibility. Create `~/.config/apexion/mcp.js
 
 Supports **stdio** (child process), **Streamable HTTP** (2025 spec), and **SSE** (2024 legacy spec) transports. When `url` is configured without explicit `type`, apexion auto-detects the protocol. Project-level config overrides global config. Use `/mcp` to check connection status.
 
+### Runtime behavior (lightweight by default)
+
+- **Lazy connect**: apexion does not connect to all MCP servers at startup.
+- **On-demand activation**: servers are connected only when the current turn needs their tools (for example, docs/image/GitHub queries).
+- **Failure isolation**: MCP failures are isolated per server and do not crash the main agent loop.
+- **Resource control**: idle MCP connections are cleaned up automatically; active connections are capped to avoid resource spikes.
+- **Graceful fallback**: if an MCP server is unavailable, apexion continues with built-in tools.
+
 ### MiniMax Image Understanding (Coding Plan MCP)
 
 MiniMax OpenAI-compatible chat currently accepts text input only. To analyze dragged images with `provider: minimax`, configure MiniMax Coding Plan MCP and apexion will auto-bridge image attachments through an MCP image tool (for example `understand_image`).
@@ -416,6 +424,21 @@ Provides current documentation for popular libraries, avoiding hallucinated or o
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
+```
+
+#### GitHub — Repository and code search
+
+Useful for repository structure/code lookups without cloning. Public repos work out of the box. Token is optional for higher rate limits and private repo access.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
     }
   }
 }

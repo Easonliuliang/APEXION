@@ -47,7 +47,7 @@ This is a Go CLI tool that...
 
 ```bash
 # Install
-go install github.com/Easonliuliang/APEXION@latest
+go install github.com/apexion-ai/apexion@latest
 
 # Configure (interactive wizard)
 apexion init
@@ -73,20 +73,20 @@ apexion
 ### Go (recommended)
 
 ```bash
-go install github.com/Easonliuliang/APEXION@latest
+go install github.com/apexion-ai/apexion@latest
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/Easonliuliang/APEXION
+git clone https://github.com/apexion-ai/apexion
 cd apexion
 go build -o apexion .
 ```
 
 ### Pre-built binaries
 
-Download from [GitHub Releases](https://github.com/Easonliuliang/APEXION/releases) for macOS, Linux, and Windows (amd64 / arm64).
+Download from [GitHub Releases](https://github.com/apexion-ai/apexion/releases) for macOS, Linux, and Windows (amd64 / arm64).
 
 ---
 
@@ -286,6 +286,14 @@ apexion supports MCP servers for extensibility. Create `~/.config/apexion/mcp.js
 
 Supports both **stdio** (child process) and **HTTP** (streamable) transports. Project-level config overrides global config. Use `/mcp` to check connection status.
 
+Runtime behavior is lightweight by default:
+
+- **Lazy connect**: MCP servers are not connected at startup.
+- **On-demand use**: only the MCP servers needed for the current turn are connected.
+- **Failure isolation**: MCP failures do not break the main agent loop.
+- **Auto cleanup**: idle MCP connections are cleaned up; active connections are capped.
+- **Graceful fallback**: built-in tools are used when MCP is unavailable.
+
 ---
 
 ## Custom Commands
@@ -385,7 +393,7 @@ The provider interface emits a unified `Event` stream (`TextDelta`, `ToolCallDon
 Contributions are welcome!
 
 ```bash
-git clone https://github.com/Easonliuliang/APEXION
+git clone https://github.com/apexion-ai/apexion
 cd apexion
 go build ./...
 go test ./...

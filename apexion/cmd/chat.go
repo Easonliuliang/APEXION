@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/apexion-ai/apexion/internal/agent"
 	"github.com/apexion-ai/apexion/internal/config"
@@ -58,22 +57,12 @@ func runChat() error {
 		executor.SetTestRunner(tr)
 	}
 
-	// MCP: load config, connect all servers, register tools
+	// MCP: load config (lazy connect in agent loop; do not pre-connect here)
 	mcpCfg, _ := mcp.LoadMCPConfig(cwd)
 	var mcpMgr *mcp.Manager
 	if mcpCfg != nil && len(mcpCfg.MCPServers) > 0 {
 		mcpMgr = mcp.NewManager(mcpCfg)
 		defer mcpMgr.Close()
-		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		errs := mcpMgr.ConnectAll(initCtx)
-		initCancel()
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "[mcp] warning: %v\n", e)
-		}
-		n := mcp.RegisterTools(mcpMgr, registry)
-		if n > 0 {
-			fmt.Fprintf(os.Stderr, "[mcp] registered %d tool(s)\n", n)
-		}
 	}
 
 	dbPath, err := session.DefaultDBPath()

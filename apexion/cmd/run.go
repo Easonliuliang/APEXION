@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/apexion-ai/apexion/internal/agent"
+	"github.com/apexion-ai/apexion/internal/mcp"
 	"github.com/apexion-ai/apexion/internal/permission"
 	"github.com/apexion-ai/apexion/internal/session"
 	"github.com/apexion-ai/apexion/internal/tools"
@@ -87,6 +88,12 @@ func runPipe(prompt string) error {
 
 	// Load hooks
 	cwd, _ := os.Getwd()
+	mcpCfg, _ := mcp.LoadMCPConfig(cwd)
+	var mcpMgr *mcp.Manager
+	if mcpCfg != nil && len(mcpCfg.MCPServers) > 0 {
+		mcpMgr = mcp.NewManager(mcpCfg)
+		defer mcpMgr.Close()
+	}
 	if hm := tools.LoadHooks(cwd); hm.HasHooks() {
 		executor.SetHooks(hm)
 	}
@@ -105,6 +112,9 @@ func runPipe(prompt string) error {
 	ui := tui.NewPipeIO(outputFormat, true, printLast)
 
 	a := agent.New(p, executor, cfg, ui, store)
+	if mcpMgr != nil {
+		a.SetMCPManager(mcpMgr)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,6 +157,12 @@ func runOnce(prompt string) error {
 
 	// Load hooks from .apexion/hooks.yaml and ~/.config/apexion/hooks.yaml
 	cwd, _ := os.Getwd()
+	mcpCfg, _ := mcp.LoadMCPConfig(cwd)
+	var mcpMgr *mcp.Manager
+	if mcpCfg != nil && len(mcpCfg.MCPServers) > 0 {
+		mcpMgr = mcp.NewManager(mcpCfg)
+		defer mcpMgr.Close()
+	}
 	if hm := tools.LoadHooks(cwd); hm.HasHooks() {
 		executor.SetHooks(hm)
 	}
@@ -187,6 +203,9 @@ func runOnce(prompt string) error {
 				executor.SetToolCanceller(tc)
 			}
 			a := agent.New(p, executor, cfg, ui, store)
+			if mcpMgr != nil {
+				a.SetMCPManager(mcpMgr)
+			}
 			return a.RunOnce(ctx, prompt)
 		})
 	}
@@ -196,6 +215,9 @@ func runOnce(prompt string) error {
 	executor.SetConfirmer(ui)
 
 	a := agent.New(p, executor, cfg, ui, store)
+	if mcpMgr != nil {
+		a.SetMCPManager(mcpMgr)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

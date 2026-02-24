@@ -29,10 +29,12 @@ func ClassifyIntent(userText string, hasImage bool) Intent {
 		return IntentDebug
 	}
 
-	if containsTokenAny(tokens, "docs", "documentation", "github", "latest", "recent", "official") ||
+	if containsAny(s, "github.com/") ||
+		containsTokenAny(tokens, "docs", "documentation", "github", "latest", "recent", "official", "repo", "repository", "star", "stars", "compare") ||
 		containsAny(s,
 			"latest", "recent", "news", "documentation", "docs", "github", "search web", "online", "official",
 			"最新", "最近", "官方文档", "文档", "查文档", "联网", "搜索", "官网", "教程", "示例",
+			"仓库", "项目地址", "star", "stars", "点赞", "热度", "对比", "优势", "缺点", "门槛",
 		) {
 		return IntentResearch
 	}

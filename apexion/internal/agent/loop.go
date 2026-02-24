@@ -55,6 +55,9 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 			return nil
 		}
 
+		// Lazy MCP: connect/register only servers needed for the current turn.
+		a.ensureMCPToolsForCurrentTurn(turnCtx)
+
 		// Two-stage auto-compaction.
 		a.maybeCompact(turnCtx, budget)
 

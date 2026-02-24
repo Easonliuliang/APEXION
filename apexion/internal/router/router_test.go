@@ -17,6 +17,9 @@ func TestClassifyIntent(t *testing.T) {
 		{name: "research", text: "search latest docs online", want: IntentResearch},
 		{name: "research_github", text: "search github for examples", want: IntentResearch},
 		{name: "research_zh", text: "查一下 Go context 的最新官方文档和常见用法", want: IntentResearch},
+		{name: "research_github_url", text: "帮我看看这个项目 https://github.com/ErlichLiu/Proma", want: IntentResearch},
+		{name: "research_compare", text: "它和我们的项目不同之处，优势等分析", want: IntentResearch},
+		{name: "research_stars", text: "它的点赞比我高", want: IntentResearch},
 		{name: "system", text: "check disk usage", want: IntentSystem},
 		{name: "system_zh_disk", text: "我的磁盘快满了，帮我看下系统占用", want: IntentSystem},
 		{name: "system_zh_ls", text: "用 ls 看下当前目录有哪些文件", want: IntentSystem},
@@ -68,5 +71,37 @@ func TestPlanMaxCandidatesCreatesFallback(t *testing.T) {
 	}
 	if len(plan.Fallback) != 2 {
 		t.Fatalf("expected 2 fallback tools, got %d", len(plan.Fallback))
+	}
+}
+
+func TestPlanResearchDocsPrefersContext7WhenAvailable(t *testing.T) {
+	plan := Plan(PlanInput{
+		UserText: "查一下 Go context 的最新官方文档和常见用法。",
+		Tools: []CandidateTool{
+			{Name: "doc_context", ReadOnly: true},
+			{Name: "web_search", ReadOnly: true},
+			{Name: "web_fetch", ReadOnly: true},
+			{Name: "mcp__context7__resolve-library-id", ReadOnly: false},
+		},
+	}, PlanOptions{})
+
+	if len(plan.Primary) == 0 || plan.Primary[0].Name != "mcp__context7__resolve-library-id" {
+		t.Fatalf("expected context7 tool to rank first for docs query, got %+v", plan.Primary)
+	}
+}
+
+func TestPlanResearchGitHubPrefersGitHubToolWhenAvailable(t *testing.T) {
+	plan := Plan(PlanInput{
+		UserText: "帮我看看这个项目 https://github.com/ErlichLiu/Proma",
+		Tools: []CandidateTool{
+			{Name: "doc_context", ReadOnly: true},
+			{Name: "web_search", ReadOnly: true},
+			{Name: "web_fetch", ReadOnly: true},
+			{Name: "mcp__github__get_file_contents", ReadOnly: false},
+		},
+	}, PlanOptions{})
+
+	if len(plan.Primary) == 0 || plan.Primary[0].Name != "mcp__github__get_file_contents" {
+		t.Fatalf("expected github tool to rank first for github query, got %+v", plan.Primary)
 	}
 }

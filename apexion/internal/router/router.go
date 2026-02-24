@@ -1,6 +1,17 @@
 package router
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
+
+type researchFocus string
+
+const (
+	researchFocusGeneral researchFocus = "general"
+	researchFocusDocs    researchFocus = "docs"
+	researchFocusGitHub  researchFocus = "github"
+)
 
 type scoredTool struct {
 	tool  CandidateTool
@@ -16,7 +27,8 @@ func Plan(input PlanInput, opts PlanOptions) RoutePlan {
 		return plan
 	}
 
-	preferred := preferredTools(plan.Intent)
+	researchMode := inferResearchFocus(plan.Intent, input.UserText)
+	preferred := preferredTools(plan.Intent, researchMode)
 	preferredRank := make(map[string]int, len(preferred))
 	for i, name := range preferred {
 		preferredRank[name] = i
@@ -28,7 +40,7 @@ func Plan(input PlanInput, opts PlanOptions) RoutePlan {
 			plan.Filtered = append(plan.Filtered, FilteredTool{Name: t.Name, Reason: reason})
 			continue
 		}
-		scored = append(scored, scoredTool{tool: t, score: scoreTool(input, plan.Intent, t, preferredRank)})
+		scored = append(scored, scoredTool{tool: t, score: scoreTool(input, plan.Intent, researchMode, t, preferredRank)})
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
@@ -59,7 +71,7 @@ func hardGate(input PlanInput, tool CandidateTool) (string, bool) {
 	return "", false
 }
 
-func scoreTool(input PlanInput, intent Intent, tool CandidateTool, preferredRank map[string]int) int {
+func scoreTool(input PlanInput, intent Intent, mode researchFocus, tool CandidateTool, preferredRank map[string]int) int {
 	score := 50
 
 	if idx, ok := preferredRank[tool.Name]; ok {
@@ -98,9 +110,40 @@ func scoreTool(input PlanInput, intent Intent, tool CandidateTool, preferredRank
 		}
 	}
 
-	// Research routing: docs and web tools should float up.
-	if intent == IntentResearch && (tool.Name == "doc_context" || tool.Name == "web_search" || tool.Name == "web_fetch") {
-		score += 20
+	// Research routing: prioritize high-semantic docs/github tools before generic fetch.
+	if intent == IntentResearch {
+		switch mode {
+		case researchFocusDocs:
+			switch {
+			case isContext7Tool(tool.Name):
+				score += 46
+			case tool.Name == "doc_context":
+				score += 28
+			case tool.Name == "web_search":
+				score += 20
+			case tool.Name == "web_fetch":
+				score += 6
+			case isGitHubTool(tool.Name):
+				score -= 8
+			}
+		case researchFocusGitHub:
+			switch {
+			case isGitHubTool(tool.Name):
+				score += 42
+			case tool.Name == "web_search":
+				score += 22
+			case tool.Name == "web_fetch":
+				score += 12
+			case isContext7Tool(tool.Name):
+				score += 10
+			case tool.Name == "doc_context":
+				score -= 6
+			}
+		default:
+			if tool.Name == "doc_context" || tool.Name == "web_search" || tool.Name == "web_fetch" || isContext7Tool(tool.Name) || isGitHubTool(tool.Name) {
+				score += 20
+			}
+		}
 	}
 
 	// Debug routing: execution tools get a slight boost.
@@ -111,7 +154,7 @@ func scoreTool(input PlanInput, intent Intent, tool CandidateTool, preferredRank
 	return score
 }
 
-func preferredTools(intent Intent) []string {
+func preferredTools(intent Intent, mode researchFocus) []string {
 	switch intent {
 	case IntentVision:
 		return []string{
@@ -134,17 +177,7 @@ func preferredTools(intent Intent) []string {
 			"git_push",
 		}
 	case IntentResearch:
-		return []string{
-			"doc_context",
-			"web_search",
-			"web_fetch",
-			"task",
-			"repo_map",
-			"symbol_nav",
-			"read_file",
-			"grep",
-			"glob",
-		}
+		return preferredResearchTools(mode)
 	case IntentDebug:
 		return []string{
 			"symbol_nav",
@@ -176,6 +209,78 @@ func preferredTools(intent Intent) []string {
 			"list_dir",
 			"todo_read",
 			"todo_write",
+		}
+	}
+}
+
+func inferResearchFocus(intent Intent, userText string) researchFocus {
+	if intent != IntentResearch {
+		return researchFocusGeneral
+	}
+	s := strings.ToLower(strings.TrimSpace(userText))
+	if s == "" {
+		return researchFocusGeneral
+	}
+	tokens := tokenize(s)
+
+	if containsAny(s,
+		"github.com/", "github ", "repo", "repository", "pull request", "issues", "stars",
+		"仓库", "项目地址", "星标", "点赞", "release", "readme",
+	) || containsTokenAny(tokens, "github", "repo", "repository", "star", "stars", "fork", "issue", "issues") {
+		return researchFocusGitHub
+	}
+	if containsAny(s,
+		"docs", "documentation", "official", "api", "sdk", "context7", "latest",
+		"文档", "官方文档", "教程", "示例", "用法", "最新",
+	) || containsTokenAny(tokens, "docs", "documentation", "official", "api", "sdk", "library", "context7") {
+		return researchFocusDocs
+	}
+	return researchFocusGeneral
+}
+
+func preferredResearchTools(mode researchFocus) []string {
+	switch mode {
+	case researchFocusDocs:
+		return []string{
+			"mcp__context7__resolve-library-id",
+			"mcp__context7__get-library-docs",
+			"mcp__context7__query-docs",
+			"doc_context",
+			"web_search",
+			"web_fetch",
+			"task",
+			"repo_map",
+			"symbol_nav",
+			"read_file",
+			"grep",
+			"glob",
+		}
+	case researchFocusGitHub:
+		return []string{
+			"mcp__github__search_repositories",
+			"mcp__github__get_file_contents",
+			"mcp__github__search_code",
+			"web_search",
+			"web_fetch",
+			"doc_context",
+			"task",
+			"repo_map",
+			"symbol_nav",
+			"read_file",
+			"grep",
+			"glob",
+		}
+	default:
+		return []string{
+			"doc_context",
+			"web_search",
+			"web_fetch",
+			"task",
+			"repo_map",
+			"symbol_nav",
+			"read_file",
+			"grep",
+			"glob",
 		}
 	}
 }

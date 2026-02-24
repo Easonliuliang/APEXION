@@ -32,6 +32,8 @@ func (a *Agent) bridgeImagesViaMCP(ctx context.Context, userText string, images 
 	if a.mcpManager == nil {
 		return userText, false, "MCP not configured"
 	}
+	// Ensure image-capable MCP servers are connected before selecting bridge tool.
+	a.ensureMCPToolsForInput(ctx, userText, true)
 
 	tool, ok := selectImageBridgeTool(a.mcpManager.AllTools())
 	if !ok {

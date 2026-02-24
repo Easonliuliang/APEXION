@@ -35,9 +35,15 @@ func DefaultProfile(toolName string) ToolProfile {
 		if isImageTool(name) {
 			return ToolProfile{Domain: IntentVision, SemanticLevel: SemanticHigh, Risk: RiskNetwork}
 		}
+		if isContext7Tool(name) || isGitHubTool(name) {
+			return ToolProfile{Domain: IntentResearch, SemanticLevel: SemanticHigh, Risk: RiskNetwork}
+		}
 		return ToolProfile{Domain: IntentResearch, SemanticLevel: SemanticMedium, Risk: RiskNetwork}
 	}
 
+	if isGitHubTool(name) {
+		return ToolProfile{Domain: IntentResearch, SemanticLevel: SemanticMedium, Risk: RiskNetwork}
+	}
 	if strings.Contains(name, "search") {
 		return ToolProfile{Domain: IntentResearch, SemanticLevel: SemanticMedium, Risk: RiskNetwork}
 	}
@@ -49,4 +55,14 @@ func DefaultProfile(toolName string) ToolProfile {
 
 func isImageTool(name string) bool {
 	return strings.Contains(name, "image") || strings.Contains(name, "vision") || strings.Contains(name, "ocr")
+}
+
+func isContext7Tool(name string) bool {
+	return strings.Contains(name, "context7")
+}
+
+func isGitHubTool(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	n = strings.ReplaceAll(n, "-", "_")
+	return strings.Contains(n, "github")
 }

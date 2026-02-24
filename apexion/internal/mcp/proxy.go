@@ -94,6 +94,33 @@ func RegisterTools(manager *Manager, registry *tools.Registry) int {
 	return count
 }
 
+// RegisterToolsForServers registers tools only from the given server names.
+// Unknown or disconnected servers are skipped.
+func RegisterToolsForServers(manager *Manager, registry *tools.Registry, serverNames []string) int {
+	if len(serverNames) == 0 {
+		return RegisterTools(manager, registry)
+	}
+	all := manager.AllTools()
+	count := 0
+	for _, serverName := range serverNames {
+		serverTools, ok := all[serverName]
+		if !ok {
+			continue
+		}
+		for _, t := range serverTools {
+			proxy := &MCPToolProxy{
+				serverName: serverName,
+				tool:       t,
+				manager:    manager,
+				fullName:   fmt.Sprintf("mcp__%s__%s", serverName, t.Name),
+			}
+			registry.Register(proxy)
+			count++
+		}
+	}
+	return count
+}
+
 // ── Schema conversion ────────────────────────────────────────────────────────
 
 // extractProperties extracts JSON Schema properties from MCP Tool.InputSchema (any).

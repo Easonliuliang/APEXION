@@ -10,7 +10,7 @@ import (
 func TestLoadSystemPrompt_EmbeddedDefaults(t *testing.T) {
 	// Use a temp dir with no overrides — should load all embedded sections.
 	tmpDir := t.TempDir()
-	prompt := loadSystemPrompt(tmpDir)
+	prompt := loadSystemPrompt(tmpDir, "full")
 
 	// Verify all sections are present.
 	for _, section := range promptSections {
@@ -57,7 +57,7 @@ func TestLoadSystemPrompt_UserOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt := loadSystemPrompt(tmpDir)
+	prompt := loadSystemPrompt(tmpDir, "full")
 
 	// The custom safety content should replace the embedded default.
 	if !strings.Contains(prompt, "Custom safety rules for testing") {
@@ -88,7 +88,7 @@ func TestLoadSystemPrompt_ExtraMd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt := loadSystemPrompt(tmpDir)
+	prompt := loadSystemPrompt(tmpDir, "full")
 
 	if !strings.Contains(prompt, extra) {
 		t.Error("_extra.md content was not appended to prompt")

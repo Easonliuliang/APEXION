@@ -1,6 +1,10 @@
 # Compiled binary
 apexion
 /dist/
+apexion-test
+test-apexion
+/bin/
+cookies.json
 
 # IDE
 .idea/
@@ -30,4 +34,3 @@ coverage.html
 
 # Debug
 __debug_bin*
-

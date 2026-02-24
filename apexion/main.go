@@ -7,9 +7,9 @@ import (
 )
 
 // version info injected via ldflags:
-// go build -ldflags "-X main.version=0.3.1 -X main.commit=abc123 -X main.date=2026-02-19"
+// go build -ldflags "-X main.version=0.3.2 -X main.commit=abc123 -X main.date=2026-02-24"
 var (
-	version = "0.3.1"
+	version = "0.3.2"
 	commit  = "none"
 	date    = "unknown"
 )

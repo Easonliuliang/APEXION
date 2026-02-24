@@ -82,6 +82,7 @@ func TestOpenAIProvider_NameDetection(t *testing.T) {
 		{"", "openai"},
 		{"https://api.deepseek.com/v1", "deepseek"},
 		{"https://api.minimax.chat/v1", "minimax"},
+		{"https://generativelanguage.googleapis.com/v1beta/openai/", "gemini"},
 		{"https://api.moonshot.cn/v1", "kimi"},
 		{"https://dashscope.aliyuncs.com/v1", "qwen"},
 		{"https://custom.api.com/v1", "openai"},

@@ -29,6 +29,10 @@ doubao:
   base_url: https://ark.cn-beijing.volces.com/api/v3
   default_model: doubao-seed-2-0-pro
 
+gemini:
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  default_model: gemini-2.5-pro
+
 groq:
   base_url: https://api.groq.com/openai/v1
   default_model: llama-3.3-70b-versatile

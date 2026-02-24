@@ -56,6 +56,17 @@ type ProviderConfig struct {
 	APIKey  string `yaml:"api_key"`
 	BaseURL string `yaml:"base_url"`
 	Model   string `yaml:"model"`
+	// ImageInput overrides image modality support checks for this provider.
+	// nil = auto-detect from provider/model heuristics.
+	ImageInput *bool `yaml:"image_input"`
+	// ImageModelsAllow is an optional model allow list for image inputs.
+	// If non-empty, only matched models are allowed (unless denied by deny list).
+	// Supports exact match or glob patterns like "gpt-4o*".
+	ImageModelsAllow []string `yaml:"image_models_allow"`
+	// ImageModelsDeny is an optional model deny list for image inputs.
+	// Deny rules take precedence over allow rules.
+	// Supports exact match or glob patterns like "*-text".
+	ImageModelsDeny []string `yaml:"image_models_deny"`
 }
 
 // PermissionConfig holds permission system settings.
@@ -86,6 +97,25 @@ type WebConfig struct {
 	SearchAPIKey string `yaml:"search_api_key"`
 }
 
+// ToolRoutingConfig holds settings for tool routing strategy.
+type ToolRoutingConfig struct {
+	// Enabled toggles Tool Router planning before each model turn.
+	Enabled bool `yaml:"enabled"`
+
+	// MaxCandidates limits how many tools are exposed after routing.
+	// 0 means no cap.
+	MaxCandidates int `yaml:"max_candidates"`
+
+	// EnableRepair toggles automatic tool-name and argument repair.
+	EnableRepair bool `yaml:"enable_repair"`
+
+	// EnableFallback toggles fallback tool execution when primary tool fails.
+	EnableFallback bool `yaml:"enable_fallback"`
+
+	// Debug emits route trace hints in UI messages.
+	Debug bool `yaml:"debug"`
+}
+
 // SandboxConfig holds settings for bash tool sandboxing.
 type SandboxConfig struct {
 	// WorkDir restricts bash execution to this directory tree.
@@ -112,6 +142,9 @@ type Config struct {
 
 	// Web holds settings for web tools (web_fetch, web_search)
 	Web WebConfig `yaml:"web"`
+
+	// ToolRouting holds settings for tool routing strategy.
+	ToolRouting ToolRoutingConfig `yaml:"tool_routing"`
 
 	// SystemPrompt is a custom system prompt (empty uses default).
 	SystemPrompt string `yaml:"system_prompt"`
@@ -156,7 +189,7 @@ type Config struct {
 // LintConfig holds configuration for the lint-fix loop.
 type LintConfig struct {
 	Enabled  bool              `yaml:"enabled"`
-	Commands map[string]string `yaml:"commands"` // file extension → lint command ({{.file}} placeholder)
+	Commands map[string]string `yaml:"commands"`  // file extension → lint command ({{.file}} placeholder)
 	MaxFixes int               `yaml:"max_fixes"` // max auto-fix attempts per edit, default 3
 }
 
@@ -199,6 +232,13 @@ func DefaultConfig() *Config {
 				"read_file", "glob", "grep", "list_dir",
 				"web_fetch", "web_search",
 			},
+		},
+		ToolRouting: ToolRoutingConfig{
+			Enabled:        true,
+			MaxCandidates:  0,
+			EnableRepair:   true,
+			EnableFallback: true,
+			Debug:          false,
 		},
 	}
 }
@@ -295,6 +335,15 @@ func SaveProviderToFile(providerName string, pc ProviderConfig) error {
 	}
 	if pc.Model != "" {
 		entry["model"] = pc.Model
+	}
+	if pc.ImageInput != nil {
+		entry["image_input"] = *pc.ImageInput
+	}
+	if len(pc.ImageModelsAllow) > 0 {
+		entry["image_models_allow"] = pc.ImageModelsAllow
+	}
+	if len(pc.ImageModelsDeny) > 0 {
+		entry["image_models_deny"] = pc.ImageModelsDeny
 	}
 	providers[providerName] = entry
 	raw["providers"] = providers

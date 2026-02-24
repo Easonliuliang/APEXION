@@ -63,6 +63,7 @@ func Execute(version, commit, date string) {
 	rootCmd.AddCommand(newRunCmd())
 	rootCmd.AddCommand(newVersionCmd(version, commit, date))
 	rootCmd.AddCommand(newInitCmd())
+	rootCmd.AddCommand(newEvalToolRoutingCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

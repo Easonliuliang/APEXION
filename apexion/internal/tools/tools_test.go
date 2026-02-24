@@ -16,10 +16,11 @@ import (
 func TestDefaultRegistry_AllToolsRegistered(t *testing.T) {
 	r := DefaultRegistry(nil, nil)
 	expected := []string{
-		"bash", "edit_file", "git_branch", "git_commit", "git_diff",
-		"git_log", "git_push", "git_status", "glob", "grep",
-		"list_dir", "question", "read_file", "task", "todo_read",
-		"todo_write", "web_fetch", "web_search", "write_file",
+		"bash", "doc_context", "edit_file", "git_branch", "git_commit",
+		"git_diff", "git_log", "git_push", "git_status", "glob",
+		"grep", "list_dir", "question", "read_file", "repo_map",
+		"symbol_nav", "task", "todo_read", "todo_write", "web_fetch",
+		"web_search", "write_file",
 	}
 	all := r.All()
 	if len(all) != len(expected) {
@@ -341,6 +342,9 @@ func TestToolOutputLimit(t *testing.T) {
 		{"bash", 32 * 1024},
 		{"web_fetch", 32 * 1024},
 		{"web_search", 32 * 1024},
+		{"repo_map", 32 * 1024},
+		{"symbol_nav", 32 * 1024},
+		{"doc_context", 32 * 1024},
 		{"git_diff", 16 * 1024},
 		{"glob", 16 * 1024},
 		{"list_dir", 16 * 1024},

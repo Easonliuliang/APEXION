@@ -21,6 +21,17 @@ var promptSections = []string{
 	"errors",
 }
 
+// modelPromptVariant returns the prompt variant for a given provider.
+// "full" for anthropic, "lite" for all other providers (simplified prompt for weaker models).
+func modelPromptVariant(providerName string) string {
+	switch providerName {
+	case "anthropic":
+		return "full"
+	default:
+		return "lite"
+	}
+}
+
 // loadSystemPrompt assembles the system prompt from embedded defaults and user overrides.
 // Override paths (in priority order, higher wins):
 //
@@ -29,13 +40,24 @@ var promptSections = []string{
 //
 // If a user file exists for a section, it replaces the embedded default for that section.
 // A special "_extra.md" file in any override directory is appended after all sections.
-func loadSystemPrompt(cwd string) string {
+//
+// The variant parameter controls prompt complexity:
+//   - "full": load all sections as-is (for Claude/Anthropic)
+//   - "lite": use communication_lite.md and strip todo_write/todo_read from tools.md
+func loadSystemPrompt(cwd, variant string) string {
 	gitRoot := findGitRoot(cwd)
 	overrideDirs := promptOverrideDirs(cwd, gitRoot)
 
 	var sections []string
 	for _, name := range promptSections {
-		content := loadPromptSection(name, overrideDirs)
+		actualName := name
+		if variant == "lite" && name == "communication" {
+			actualName = "communication_lite"
+		}
+		content := loadPromptSection(actualName, overrideDirs)
+		if variant == "lite" && name == "tools" {
+			content = stripTodoSection(content)
+		}
 		if content != "" {
 			sections = append(sections, content)
 		}
@@ -52,6 +74,35 @@ func loadSystemPrompt(cwd string) string {
 	}
 
 	return result
+}
+
+// stripTodoSection removes the todo_write / todo_read guideline block from tools.md content.
+func stripTodoSection(content string) string {
+	const startMarker = "todo_write / todo_read"
+	idx := strings.Index(content, startMarker)
+	if idx == -1 {
+		return content
+	}
+	// Find the start of the line containing the marker.
+	lineStart := strings.LastIndex(content[:idx], "\n")
+	if lineStart == -1 {
+		lineStart = 0
+	}
+	// Find the end of the section: next tool section header or end of parent block.
+	rest := content[idx:]
+	endOffset := -1
+	for _, marker := range []string{"\ntask ", "\n</tool_guidelines>"} {
+		if pos := strings.Index(rest, marker); pos != -1 {
+			if endOffset == -1 || pos < endOffset {
+				endOffset = pos
+			}
+		}
+	}
+	if endOffset == -1 {
+		// No next section found; strip to end.
+		return strings.TrimRight(content[:lineStart], "\n")
+	}
+	return content[:lineStart] + content[idx+endOffset:]
 }
 
 // loadPromptSection loads a single prompt section by name.

@@ -63,6 +63,8 @@ type ChatRequest struct {
 	Tools        []ToolSchema
 	SystemPrompt string
 	MaxTokens    int
+	Temperature  *float64 // nil = use API default
+	TopP         *float64 // nil = use API default
 }
 
 // ── Event types (streaming output) ───────────────────────────────────────────

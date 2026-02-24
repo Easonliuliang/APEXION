@@ -125,6 +125,13 @@ providers:
   openai:
     api_key: sk-...
     model: gpt-4o
+    # Optional image capability controls (override > deny > allow > heuristic)
+    image_input: true
+    image_models_allow:
+      - "gpt-4o*"
+      - "gpt-4.1*"
+    image_models_deny:
+      - "*-text"
 
   qwen:
     api_key: sk-...
@@ -376,6 +383,26 @@ apexion supports MCP servers for extensibility. Create `~/.config/apexion/mcp.js
 ```
 
 Supports **stdio** (child process), **Streamable HTTP** (2025 spec), and **SSE** (2024 legacy spec) transports. When `url` is configured without explicit `type`, apexion auto-detects the protocol. Project-level config overrides global config. Use `/mcp` to check connection status.
+
+### MiniMax Image Understanding (Coding Plan MCP)
+
+MiniMax OpenAI-compatible chat currently accepts text input only. To analyze dragged images with `provider: minimax`, configure MiniMax Coding Plan MCP and apexion will auto-bridge image attachments through an MCP image tool (for example `understand_image`).
+
+```json
+{
+  "mcpServers": {
+    "minimax": {
+      "command": "uvx",
+      "args": ["minimax-coding-plan-mcp", "-y"],
+      "env": {
+        "MINIMAX_API_KEY": "${MINIMAX_API_KEY}",
+        "MINIMAX_API_HOST": "https://api.minimaxi.com",
+        "MINIMAX_API_RESOURCE_MODE": "url"
+      }
+    }
+  }
+}
+```
 
 ### Recommended MCP Servers
 
@@ -827,6 +854,12 @@ providers:
   openai:
     api_key: sk-...
     model: gpt-4o
+    image_input: true                 # optional hard override for image input
+    image_models_allow:               # optional allow list (exact/glob)
+      - "gpt-4o*"
+      - "gpt-4.1*"
+    image_models_deny:                # optional deny list (takes precedence)
+      - "*-text"
   deepseek:
     api_key: sk-...
     model: deepseek-chat

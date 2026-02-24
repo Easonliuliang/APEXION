@@ -1,0 +1,239 @@
+{
+  "version": "2026-02-24.v1",
+  "cases": [
+    {
+      "id": "codebase_architecture_01",
+      "user_text": "map this repository architecture and key modules",
+      "expected_intent": "codebase",
+      "expected_top_any": ["repo_map"],
+      "expected_top_k": 1,
+      "expected_must_contain": ["symbol_nav", "read_file"]
+    },
+    {
+      "id": "codebase_symbols_02",
+      "user_text": "find where HandleRequest is defined and used",
+      "expected_intent": "codebase",
+      "expected_top_any": ["repo_map", "symbol_nav"],
+      "expected_top_k": 2,
+      "expected_must_contain": ["symbol_nav"]
+    },
+    {
+      "id": "codebase_entry_03",
+      "user_text": "what is the main entrypoint and startup flow",
+      "expected_intent": "codebase",
+      "expected_top_any": ["repo_map"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "codebase_refactor_04",
+      "user_text": "prepare a refactor plan for the service layer",
+      "expected_intent": "codebase",
+      "expected_top_any": ["repo_map", "task"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "codebase_callchain_05",
+      "user_text": "trace call chain for CreateOrder",
+      "expected_intent": "codebase",
+      "expected_top_any": ["symbol_nav"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "codebase_large_project_06",
+      "user_text": "explore this unfamiliar monorepo quickly",
+      "expected_intent": "codebase",
+      "expected_top_any": ["repo_map"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "codebase_find_usage_07",
+      "user_text": "find all usages of AuthMiddleware",
+      "expected_intent": "codebase",
+      "expected_top_any": ["symbol_nav"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "codebase_file_read_08",
+      "user_text": "read and explain internal/agent/loop.go",
+      "expected_intent": "codebase",
+      "expected_top_any": ["repo_map", "read_file"],
+      "expected_top_k": 3
+    },
+    {
+      "id": "debug_compile_01",
+      "user_text": "build fails with undefined symbol in handler.go",
+      "expected_intent": "debug",
+      "expected_top_any": ["symbol_nav", "bash"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "debug_test_02",
+      "user_text": "unit test fails and panic occurs in parser",
+      "expected_intent": "debug",
+      "expected_top_any": ["symbol_nav", "bash"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "debug_stacktrace_03",
+      "user_text": "investigate this stack trace and fix root cause",
+      "expected_intent": "debug",
+      "expected_top_any": ["symbol_nav"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "debug_runtime_04",
+      "user_text": "error thrown when calling createSession",
+      "expected_intent": "debug",
+      "expected_top_any": ["symbol_nav"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "debug_regression_05",
+      "user_text": "recent change causes failing integration tests",
+      "expected_intent": "debug",
+      "expected_top_any": ["symbol_nav", "bash"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "research_docs_01",
+      "user_text": "find latest official Go context documentation",
+      "expected_intent": "research",
+      "expected_top_any": ["doc_context"],
+      "expected_top_k": 1,
+      "expected_must_contain": ["web_search"]
+    },
+    {
+      "id": "research_api_02",
+      "user_text": "what is the official API reference for Gemini tool calling",
+      "expected_intent": "research",
+      "expected_top_any": ["doc_context"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "research_library_03",
+      "user_text": "latest documentation for gorm preload examples",
+      "expected_intent": "research",
+      "expected_top_any": ["doc_context"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "research_release_04",
+      "user_text": "recent release notes for claude code cli",
+      "expected_intent": "research",
+      "expected_top_any": ["doc_context", "web_search"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "research_github_05",
+      "user_text": "search github for examples of mcp understand_image",
+      "expected_intent": "research",
+      "expected_top_any": ["doc_context", "web_search"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "research_online_06",
+      "user_text": "search web for official docs on qwen tool calls",
+      "expected_intent": "research",
+      "expected_top_any": ["doc_context", "web_search"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "git_status_01",
+      "user_text": "check git status and tell me what's changed",
+      "expected_intent": "git",
+      "expected_top_any": ["git_status"],
+      "expected_top_k": 1,
+      "expected_must_contain": ["git_diff"]
+    },
+    {
+      "id": "git_review_02",
+      "user_text": "review git diff before commit",
+      "expected_intent": "git",
+      "expected_top_any": ["git_status", "git_diff"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "git_branch_03",
+      "user_text": "create a new git branch for this feature",
+      "expected_intent": "git",
+      "expected_top_any": ["git_status", "git_branch"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "git_push_04",
+      "user_text": "commit and push to remote after review",
+      "expected_intent": "git",
+      "expected_top_any": ["git_status"],
+      "expected_top_k": 1,
+      "expected_must_contain": ["git_commit", "git_push"]
+    },
+    {
+      "id": "git_log_05",
+      "user_text": "show recent git log and explain commit trend",
+      "expected_intent": "git",
+      "expected_top_any": ["git_status", "git_log"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "system_disk_01",
+      "user_text": "my disk is full check system usage",
+      "expected_intent": "system",
+      "expected_top_any": ["bash"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "system_env_02",
+      "user_text": "check shell environment and process info",
+      "expected_intent": "system",
+      "expected_top_any": ["bash"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "system_terminal_03",
+      "user_text": "diagnose terminal command not found issue",
+      "expected_intent": "system",
+      "expected_top_any": ["bash"],
+      "expected_top_k": 1
+    },
+    {
+      "id": "vision_text_only_01",
+      "user_text": "please analyze this screenshot",
+      "has_image": true,
+      "model_image_supported": false,
+      "expected_intent": "vision",
+      "expected_top_any": ["mcp__minimax__understand_image"],
+      "expected_top_k": 1,
+      "expected_filtered": ["web_fetch"]
+    },
+    {
+      "id": "vision_text_only_02",
+      "user_text": "extract OCR text from this image",
+      "has_image": true,
+      "model_image_supported": false,
+      "expected_intent": "vision",
+      "expected_top_any": ["mcp__minimax__understand_image"],
+      "expected_top_k": 1,
+      "expected_filtered": ["web_fetch"]
+    },
+    {
+      "id": "vision_model_support_03",
+      "user_text": "describe this UI image",
+      "has_image": true,
+      "model_image_supported": true,
+      "expected_intent": "vision",
+      "expected_top_any": ["mcp__minimax__understand_image", "repo_map"],
+      "expected_top_k": 2
+    },
+    {
+      "id": "vision_compare_04",
+      "user_text": "compare two attached screenshots",
+      "has_image": true,
+      "model_image_supported": false,
+      "expected_intent": "vision",
+      "expected_top_any": ["mcp__minimax__understand_image"],
+      "expected_top_k": 1,
+      "expected_filtered": ["web_fetch"]
+    }
+  ]
+}
+

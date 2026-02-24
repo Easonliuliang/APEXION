@@ -11,11 +11,6 @@ import (
 	"strings"
 )
 
-// encodeBase64 encodes bytes to a base64 string.
-func encodeBase64(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
-}
-
 // ReadFileTool reads file contents.
 type ReadFileTool struct{}
 
@@ -71,7 +66,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, params json.RawMessage) (Too
 		return readPDF(ctx, p.FilePath, p.Offset, p.Limit)
 	}
 
-	// Check for image files.
+	// Check for image files — read and return as base64 image content block.
 	if mediaType, ok := detectImageFile(p.FilePath); ok {
 		return readImage(p.FilePath, mediaType)
 	}
@@ -328,7 +323,8 @@ func detectImageFile(path string) (string, bool) {
 	return expectedType, true
 }
 
-// readImage reads an image file and returns it as base64-encoded data.
+// readImage reads an image file and returns it as base64-encoded data in a ToolResult.
+// The image is sent as an image content block so multimodal models can see it.
 func readImage(path string, mediaType string) (ToolResult, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -348,7 +344,7 @@ func readImage(path string, mediaType string) (ToolResult, error) {
 		return ToolResult{}, fmt.Errorf("failed to read image: %w", err)
 	}
 
-	encoded := encodeBase64(data)
+	encoded := base64.StdEncoding.EncodeToString(data)
 
 	return ToolResult{
 		Content:        fmt.Sprintf("[Image: %s, %s, %d bytes]", filepath.Base(path), mediaType, len(data)),

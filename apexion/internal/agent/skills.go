@@ -20,7 +20,11 @@ type SkillInfo struct {
 func loadSkills(cwd string) []SkillInfo {
 	gitRoot := findGitRoot(cwd)
 	dirs := skillDirs(cwd, gitRoot)
+	return loadSkillsFromDirs(dirs)
+}
 
+// loadSkillsFromDirs scans the given directories for *.md skill files.
+func loadSkillsFromDirs(dirs []string) []SkillInfo {
 	seen := make(map[string]bool)
 	var skills []SkillInfo
 

@@ -60,10 +60,10 @@ type questionMsg struct {
 type spinnerKind int
 
 const (
-	spinnerNone     spinnerKind = iota
-	spinnerThinking             // LLM is thinking
-	spinnerStreaming            // text is streaming from LLM
-	spinnerTool                 // tool is executing
+	spinnerNone      spinnerKind = iota
+	spinnerThinking              // LLM is thinking
+	spinnerStreaming             // text is streaming from LLM
+	spinnerTool                  // tool is executing
 )
 
 // ---------- current tool call state ----------
@@ -210,14 +210,14 @@ var apexionSpinner = spinner.Spinner{
 
 // Model is the bubbletea model managing the full TUI state.
 type Model struct {
-	textinput    textinput.Model
-	spinner      spinner.Model
-	width        int
-	height       int
-	liveContent  *strings.Builder
-	streaming    bool
-	inputMode    bool
-	spinnerKind  spinnerKind
+	textinput   textinput.Model
+	spinner     spinner.Model
+	width       int
+	height      int
+	liveContent *strings.Builder
+	streaming   bool
+	inputMode   bool
+	spinnerKind spinnerKind
 
 	currentTool          *toolCallState
 	currentToolConfirmed bool
@@ -426,19 +426,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				text := strings.TrimSpace(m.textinput.Value())
 				m.textinput.SetValue("")
 
-				// Detect dragged/typed image paths in the input text.
+				// Detect dragged/typed image paths and URLs in the input text.
 				paths, cleanText := detectImagePath(text)
+				var failedImageURLs []string
 				for _, p := range paths {
-					if img, err := readImageBase64(p); err == nil {
+					var img ImageAttachment
+					var err error
+					if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
+						img, err = downloadImageURL(p)
+					} else {
+						img, err = readImageBase64(p)
+					}
+					if err != nil {
+						// If URL image loading failed, keep the original URL in text so the
+						// model can still decide to fetch/analyze it as a fallback.
+						if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
+							failedImageURLs = append(failedImageURLs, p)
+						}
+						cmds = append(cmds, tea.Println(systemStyle.Render(
+							fmt.Sprintf("  ⚠ Image load failed: %s", err))))
+					} else {
 						m.pendingImages = append(m.pendingImages, img)
+						cmds = append(cmds, tea.Println(systemStyle.Render(
+							fmt.Sprintf("  ✓ Image attached: %s", img.Label))))
 					}
 				}
 
 				images := m.pendingImages
 				m.pendingImages = nil
+				if len(failedImageURLs) > 0 {
+					fallbackURLs := strings.Join(failedImageURLs, "\n")
+					if cleanText == "" {
+						cleanText = fallbackURLs
+					} else {
+						cleanText = cleanText + "\n" + fallbackURLs
+					}
+				}
 				m.inputCh <- inputResult{text: cleanText, images: images}
 				m.inputMode = false
 				m.textinput.Blur()
+			}
+			if len(cmds) > 0 {
+				return m, tea.Batch(cmds...)
 			}
 			return m, nil
 		case "up":

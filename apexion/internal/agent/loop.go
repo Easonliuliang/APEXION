@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/apexion-ai/apexion/internal/provider"
+	"github.com/apexion-ai/apexion/internal/router"
 	"github.com/apexion-ai/apexion/internal/session"
 	"github.com/apexion-ai/apexion/internal/tools"
 )
@@ -22,6 +23,10 @@ import (
 // (including LLM streaming) without affecting the session-level context.
 func (a *Agent) runAgentLoop(ctx context.Context) error {
 	maxIter := a.config.MaxIterations // 0 = unlimited
+	disableWebFetchForImageTurn := shouldDisableWebFetchForImageTurn(a.session.Messages)
+	if disableWebFetchForImageTurn {
+		a.io.SystemMessage("Image attached: temporarily disabling web_fetch for this turn to avoid URL-fetch misrouting.")
+	}
 
 	// Per-turn context: Esc cancels this, not the session.
 	turnCtx, turnCancel := context.WithCancel(ctx)
@@ -41,6 +46,7 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 	budget := session.NewTokenBudget(contextWindow, estimateTokens(a.systemPrompt))
 
 	doomDetector := &doomLoopDetector{}
+	failDetector := &failureLoopDetector{}
 
 	for iteration := 0; maxIter == 0 || iteration < maxIter; iteration++ {
 		// Check if the turn was cancelled before starting an iteration.
@@ -63,12 +69,15 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 				"3. Verification steps\nThe user will review your plan and switch to execution mode."
 		}
 
+		temp, topP := modelSamplingParams(a.config.Provider)
 		req := &provider.ChatRequest{
 			Model:        a.config.Model,
 			Messages:     compacted,
-			Tools:        a.buildToolSchemas(),
+			Tools:        a.buildToolSchemas(disableWebFetchForImageTurn && iteration == 0),
 			SystemPrompt: sysPrompt,
 			MaxTokens:    8192,
+			Temperature:  temp,
+			TopP:         topP,
 		}
 
 		var textContent strings.Builder
@@ -218,6 +227,23 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 			Content: toolResults,
 		})
 
+		switch failDetector.check(toolCalls, toolResults) {
+		case doomLoopWarn:
+			warning := "Repeated tool failures detected, even after repair/fallback. " +
+				"Use a different tool strategy and avoid repeating the same calls."
+			a.io.SystemMessage("warning: repeated tool failures detected — injecting strategy hint")
+			a.session.AddMessage(provider.Message{
+				Role: provider.RoleUser,
+				Content: []provider.Content{{
+					Type: provider.ContentTypeText,
+					Text: "[SYSTEM] " + warning,
+				}},
+			})
+		case doomLoopStop:
+			a.io.SystemMessage("error: repeated tool failures detected 4 times, stopping")
+			return nil
+		}
+
 		// If user interrupted during tool execution, stop the loop
 		// and return to user input. The partial results are already
 		// in the message history for context continuity.
@@ -282,8 +308,8 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 			}
 
 			a.io.ToolStart(c.ID, c.Name, string(c.Input))
-			result := a.executor.Execute(ctx, c.Name, c.Input)
-			a.io.ToolDone(c.ID, c.Name, result.Content, result.IsError)
+			result, executedName, _ := a.executeToolWithRepair(ctx, c)
+			a.io.ToolDone(c.ID, executedName, result.Content, result.IsError)
 
 			var contents []provider.Content
 			contents = append(contents, provider.Content{
@@ -292,7 +318,6 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 				ToolResult: result.Content,
 				IsError:    result.IsError,
 			})
-
 			if result.ImageData != "" {
 				contents = append(contents, provider.Content{
 					Type:           provider.ContentTypeImage,
@@ -300,7 +325,6 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 					ImageMediaType: result.ImageMediaType,
 				})
 			}
-
 			resultSlots[idx] = indexedResult{contents: contents}
 
 			if result.UserCancelled {
@@ -343,14 +367,15 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCa
 	}
 
 	a.io.ToolStart(call.ID, call.Name, string(call.Input))
-	result := a.executor.Execute(ctx, call.Name, call.Input)
-	a.io.ToolDone(call.ID, call.Name, result.Content, result.IsError)
+	result, executedName, _ := a.executeToolWithRepair(ctx, call)
+	a.io.ToolDone(call.ID, executedName, result.Content, result.IsError)
 
 	if a.eventLogger != nil {
 		a.eventLogger.Log(EventToolResult, map[string]any{
-			"tool_name": call.Name,
-			"tool_id":   call.ID,
-			"is_error":  result.IsError,
+			"tool_name":     call.Name,
+			"executed_tool": executedName,
+			"tool_id":       call.ID,
+			"is_error":      result.IsError,
 		})
 	}
 
@@ -361,7 +386,6 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCa
 		ToolResult: result.Content,
 		IsError:    result.IsError,
 	})
-
 	if result.ImageData != "" {
 		results = append(results, provider.Content{
 			Type:           provider.ContentTypeImage,
@@ -477,20 +501,189 @@ func estimateTokens(s string) int {
 	return len(s) / 4
 }
 
+// shouldDisableWebFetchForImageTurn returns true when the latest user prompt
+// in this turn contains attached images and the active provider is known to
+// misroute image analysis into web_fetch URL calls.
+func shouldDisableWebFetchForImageTurn(messages []provider.Message) bool {
+	if len(messages) == 0 {
+		return false
+	}
+
+	last := messages[len(messages)-1]
+	if last.Role != provider.RoleUser {
+		return false
+	}
+
+	hasImage := false
+	hasToolResult := false
+	for _, c := range last.Content {
+		switch c.Type {
+		case provider.ContentTypeImage:
+			hasImage = true
+		case provider.ContentTypeToolResult:
+			// User role messages with tool_result are tool feedback rounds,
+			// not the initial user prompt.
+			hasToolResult = true
+		}
+	}
+	return hasImage && !hasToolResult
+}
+
+// liteExcludedTools lists tools excluded in "lite" prompt variant.
+// Weaker models tend to misuse these, wasting tokens.
+var liteExcludedTools = map[string]bool{
+	"todo_write": true,
+	"todo_read":  true,
+}
+
 // buildToolSchemas converts the executor's registry tools into provider.ToolSchema.
 // When plan mode is active, only read-only tools are included.
-func (a *Agent) buildToolSchemas() []provider.ToolSchema {
+// When lite prompt variant is active, todo tools are excluded.
+// When disableWebFetch is true, web_fetch is omitted for this turn.
+func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 	registryTools := a.executor.Registry().All()
 	schemas := make([]provider.ToolSchema, 0, len(registryTools))
+	candidates := make([]router.CandidateTool, 0, len(registryTools))
+	schemaByName := make(map[string]provider.ToolSchema, len(registryTools))
 	for _, t := range registryTools {
 		if a.planMode && !t.IsReadOnly() {
 			continue
 		}
-		schemas = append(schemas, provider.ToolSchema{
+		if a.promptVariant == "lite" && liteExcludedTools[t.Name()] {
+			continue
+		}
+		if disableWebFetch && t.Name() == "web_fetch" {
+			continue
+		}
+		schema := provider.ToolSchema{
 			Name:        t.Name(),
 			Description: t.Description(),
 			Parameters:  t.Parameters(),
+		}
+		schemas = append(schemas, schema)
+		schemaByName[schema.Name] = schema
+		candidates = append(candidates, router.CandidateTool{
+			Name:        t.Name(),
+			Description: t.Description(),
+			ReadOnly:    t.IsReadOnly(),
 		})
 	}
-	return schemas
+	if !a.config.ToolRouting.Enabled || len(schemas) == 0 {
+		return schemas
+	}
+
+	userText, hasImage, hasToolResult := latestUserTurnContext(a.session.Messages)
+	if hasToolResult {
+		// Keep full tool set on tool_result rounds to avoid breaking multi-step chains.
+		return schemas
+	}
+
+	modelImageSupported, _, model := a.imageInputSupport()
+	plan := router.Plan(router.PlanInput{
+		UserText:            userText,
+		HasImage:            hasImage,
+		ModelImageSupported: modelImageSupported,
+		Provider:            a.config.Provider,
+		Model:               model,
+		Tools:               candidates,
+	}, router.PlanOptions{
+		MaxCandidates: a.config.ToolRouting.MaxCandidates,
+	})
+
+	if len(plan.Primary) == 0 {
+		return schemas
+	}
+
+	ordered := make([]provider.ToolSchema, 0, len(schemas))
+	seen := make(map[string]bool, len(schemas))
+	primaryNames := make([]string, 0, len(plan.Primary))
+	for _, p := range plan.Primary {
+		if s, ok := schemaByName[p.Name]; ok {
+			ordered = append(ordered, s)
+			seen[p.Name] = true
+			primaryNames = append(primaryNames, p.Name)
+		}
+	}
+	// When MaxCandidates is enabled, enforce a hard top-N gate so the model
+	// cannot bypass routing by selecting low-priority primitive tools.
+	if a.config.ToolRouting.MaxCandidates <= 0 {
+		for _, name := range plan.Fallback {
+			if seen[name] {
+				continue
+			}
+			if s, ok := schemaByName[name]; ok {
+				ordered = append(ordered, s)
+				seen[name] = true
+			}
+		}
+		// Safety net: keep any tool that was not explicitly listed.
+		for _, s := range schemas {
+			if !seen[s.Name] {
+				ordered = append(ordered, s)
+			}
+		}
+	}
+
+	if a.eventLogger != nil {
+		a.eventLogger.Log(EventToolRoute, map[string]any{
+			"intent":                plan.Intent,
+			"has_image":             hasImage,
+			"model_image_supported": modelImageSupported,
+			"primary_tools":         primaryNames,
+			"fallback_tools":        plan.Fallback,
+			"filtered_tools":        plan.Filtered,
+		})
+	}
+	if a.config.ToolRouting.Debug {
+		a.io.SystemMessage(fmt.Sprintf("Tool router: intent=%s primary=%s", plan.Intent, strings.Join(primaryNames, ", ")))
+	}
+
+	return ordered
 }
+
+// latestUserTurnContext returns the latest user text and whether that message
+// contains image or tool_result blocks.
+func latestUserTurnContext(messages []provider.Message) (text string, hasImage bool, hasToolResult bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != provider.RoleUser {
+			continue
+		}
+		var parts []string
+		for _, c := range msg.Content {
+			switch c.Type {
+			case provider.ContentTypeText:
+				if t := strings.TrimSpace(c.Text); t != "" {
+					parts = append(parts, t)
+				}
+			case provider.ContentTypeImage:
+				hasImage = true
+			case provider.ContentTypeToolResult:
+				hasToolResult = true
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n")), hasImage, hasToolResult
+	}
+	return "", false, false
+}
+
+// modelSamplingParams returns the recommended Temperature and TopP for a provider.
+// Returns nil for parameters that should use the API default.
+func modelSamplingParams(providerName string) (temp *float64, topP *float64) {
+	switch providerName {
+	case "minimax":
+		return ptrFloat64(0.7), ptrFloat64(0.95)
+	case "kimi":
+		return ptrFloat64(0.6), ptrFloat64(0.95)
+	case "qwen":
+		return ptrFloat64(0.55), nil
+	case "glm":
+		return ptrFloat64(0.7), ptrFloat64(0.95)
+	case "doubao":
+		return ptrFloat64(0.3), ptrFloat64(0.9)
+	default:
+		return nil, nil // deepseek, openai, anthropic, groq — use API defaults
+	}
+}
+
+func ptrFloat64(v float64) *float64 { return &v }

@@ -69,6 +69,12 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest) (<-chan 
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
+	if req.Temperature != nil {
+		params.Temperature = anthropic.Float(*req.Temperature)
+	}
+	if req.TopP != nil {
+		params.TopP = anthropic.Float(*req.TopP)
+	}
 
 	stream := p.client.Messages.NewStreaming(ctx, params)
 

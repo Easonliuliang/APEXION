@@ -19,8 +19,9 @@ func (t *GrepTool) IsReadOnly() bool     { return true }
 func (t *GrepTool) PermissionLevel() PermissionLevel { return PermissionRead }
 
 func (t *GrepTool) Description() string {
-	return "Search file contents using a regex pattern. " +
-		"Returns matching lines in 'file:line:content' format (max 50 results)."
+	return "Recursively search file contents using a regex pattern. " +
+		"Returns matching lines in 'file:line:content' format (max 50 results). " +
+		"ALWAYS use this tool for content search. Do NOT use bash grep or rg."
 }
 
 func (t *GrepTool) Parameters() map[string]any {

@@ -33,10 +33,18 @@ func NewOpenAIProvider(apiKey, baseURL, model string) *OpenAIProvider {
 			name = "deepseek"
 		case strings.Contains(baseURL, "minimax"):
 			name = "minimax"
+		case strings.Contains(baseURL, "generativelanguage.googleapis.com"):
+			name = "gemini"
 		case strings.Contains(baseURL, "moonshot"):
 			name = "kimi"
 		case strings.Contains(baseURL, "dashscope"):
 			name = "qwen"
+		case strings.Contains(baseURL, "bigmodel.cn"):
+			name = "glm"
+		case strings.Contains(baseURL, "volces.com"):
+			name = "doubao"
+		case strings.Contains(baseURL, "groq"):
+			name = "groq"
 		}
 	}
 
@@ -52,7 +60,7 @@ func NewOpenAIProvider(apiKey, baseURL, model string) *OpenAIProvider {
 	}
 }
 
-func (p *OpenAIProvider) Name() string        { return p.name }
+func (p *OpenAIProvider) Name() string         { return p.name }
 func (p *OpenAIProvider) Models() []string     { return []string{p.model} }
 func (p *OpenAIProvider) DefaultModel() string { return p.model }
 
@@ -86,6 +94,12 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest) (<-chan Eve
 	}
 	if len(tools) > 0 {
 		params.Tools = tools
+	}
+	if req.Temperature != nil {
+		params.Temperature = openai.Float(*req.Temperature)
+	}
+	if req.TopP != nil {
+		params.TopP = openai.Float(*req.TopP)
 	}
 
 	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
@@ -261,6 +275,11 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) []openai.ChatCompletion
 			// If we have images, create a multipart user message.
 			if len(imageParts) > 0 {
 				var parts []openai.ChatCompletionContentPartUnionParam
+				// When images come from tool results there may be no text;
+				// add a hint so the model knows to look at the image.
+				if len(textParts) == 0 {
+					parts = append(parts, openai.TextContentPart("Image content:"))
+				}
 				for _, t := range textParts {
 					parts = append(parts, openai.TextContentPart(t))
 				}
@@ -270,15 +289,13 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) []openai.ChatCompletion
 						URL: dataURI,
 					}))
 				}
-				if len(parts) > 0 {
-					params = append(params, openai.ChatCompletionMessageParamUnion{
-						OfUser: &openai.ChatCompletionUserMessageParam{
-							Content: openai.ChatCompletionUserMessageParamContentUnion{
-								OfArrayOfContentParts: parts,
-							},
+				params = append(params, openai.ChatCompletionMessageParamUnion{
+					OfUser: &openai.ChatCompletionUserMessageParam{
+						Content: openai.ChatCompletionUserMessageParamContentUnion{
+							OfArrayOfContentParts: parts,
 						},
-					})
-				}
+					},
+				})
 			} else if len(textParts) > 0 {
 				// No images — simple text messages.
 				for _, t := range textParts {

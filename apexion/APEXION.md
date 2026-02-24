@@ -4,7 +4,7 @@ This is the apexion project — an open-source AI coding assistant written in Go
 
 ## Key Facts
 - Module path: github.com/apexion-ai/apexion
-- Go version: 1.23
+- Go version: 1.24.2
 - Entry point: main.go → cmd.Execute()
 
 ## Rules

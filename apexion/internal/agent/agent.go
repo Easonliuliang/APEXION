@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/apexion-ai/apexion/internal/config"
 	"github.com/apexion-ai/apexion/internal/mcp"
@@ -47,6 +48,10 @@ type Agent struct {
 	promptVariant   string // "full" or "lite"
 	architectNext   bool   // next prompt uses architect mode
 	architectAuto   bool   // architect auto-execute
+	// imageBridgeCache stores MCP image analysis by image fingerprint so
+	// repeated prompts on the same attachment can skip extra MCP calls.
+	imageBridgeCache   map[string]string
+	imageBridgeCacheMu sync.RWMutex
 }
 
 // New creates a new Agent with the given IO implementation.
@@ -84,19 +89,20 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 	}
 
 	a := &Agent{
-		provider:       p,
-		executor:       exec,
-		config:         cfg,
-		session:        sess,
-		store:          store,
-		basePrompt:     base,
-		promptVariant:  variant,
-		io:             ui,
-		summarizer:     &session.LLMSummarizer{Provider: p},
-		customCommands: loadCustomCommands(cwd),
-		rules:          loadRules(cwd),
-		skills:         loadSkills(cwd),
-		costTracker:    NewCostTracker(costOverrides),
+		provider:         p,
+		executor:         exec,
+		config:           cfg,
+		session:          sess,
+		store:            store,
+		basePrompt:       base,
+		promptVariant:    variant,
+		io:               ui,
+		summarizer:       &session.LLMSummarizer{Provider: p},
+		customCommands:   loadCustomCommands(cwd),
+		rules:            loadRules(cwd),
+		skills:           loadSkills(cwd),
+		costTracker:      NewCostTracker(costOverrides),
+		imageBridgeCache: make(map[string]string),
 	}
 
 	// Initialize repo map (async build in background).
@@ -184,6 +190,28 @@ func (a *Agent) rebuildSystemPrompt() {
 	}
 }
 
+// imageInputSupport returns whether the current provider/model should accept
+// image attachments, plus a short reason used in user-facing diagnostics.
+func (a *Agent) imageInputSupport() (supported bool, reason string, model string) {
+	model = a.config.Model
+	if model == "" {
+		model = a.provider.DefaultModel()
+	}
+
+	pc := a.config.GetProviderConfig(a.config.Provider)
+	decision := provider.DetectImageSupportWithConfig(
+		a.config.Provider,
+		model,
+		pc.ImageInput,
+		pc.ImageModelsAllow,
+		pc.ImageModelsDeny,
+	)
+	if !decision.Supported && decision.Confident {
+		return false, decision.Reason, model
+	}
+	return true, decision.Reason, model
+}
+
 // Run starts the interactive REPL loop.
 func (a *Agent) Run(ctx context.Context) error {
 	// Initialize event logger.
@@ -217,7 +245,15 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			return err
 		}
-		if input == "" {
+		// Collect any images the user attached via drag-drop or clipboard paste.
+		// Must be done before the empty-input check, since the user may have
+		// typed only an image path (which becomes empty after path extraction).
+		var images []tui.ImageAttachment
+		if ii, ok := a.io.(tui.ImageInput); ok {
+			images = ii.PendingImages()
+		}
+
+		if input == "" && len(images) == 0 {
 			continue
 		}
 
@@ -244,12 +280,49 @@ func (a *Agent) Run(ctx context.Context) error {
 			continue
 		}
 
-		// Collect any images the user attached via drag-drop or clipboard paste.
-		var images []tui.ImageAttachment
-		if ii, ok := a.io.(tui.ImageInput); ok {
-			images = ii.PendingImages()
+		// Enforce a model capability gate for image inputs.
+		if len(images) > 0 {
+			supported, reason, model := a.imageInputSupport()
+			isMiniMaxProvider := strings.EqualFold(a.config.Provider, "minimax")
+			bridged := false
+
+			// MiniMax OpenAI-compatible chat is text-only: bridge attachments through
+			// MCP understand_image. Also attempt this bridge for any explicitly
+			// unsupported model/provider combination.
+			if isMiniMaxProvider || !supported {
+				if bridgedInput, ok, _ := a.bridgeImagesViaMCP(ctx, input, images); ok {
+					input = bridgedInput
+					images = nil // send text-only prompt augmented with MCP analysis
+					bridged = true
+				}
+			}
+
+			if len(images) > 0 && !bridged {
+				if isMiniMaxProvider {
+					a.io.SystemMessage("MiniMax OpenAI-compatible chat API does not accept image input directly. Configure MiniMax MCP (understand_image) and retry.")
+					continue
+				}
+				if !supported {
+					a.io.SystemMessage(fmt.Sprintf(
+						"Model %s does not support image inputs (%s). Switch model/provider and resend.",
+						model, reason,
+					))
+					if a.eventLogger != nil {
+						a.eventLogger.Log("image_blocked", map[string]any{
+							"provider": a.config.Provider,
+							"model":    model,
+							"reason":   reason,
+						})
+					}
+					continue
+				}
+			}
 		}
 
+		// Build user message with text and optional images.
+		if input == "" {
+			input = "Please look at this image."
+		}
 		a.io.UserMessage(input)
 		contents := []provider.Content{{
 			Type: provider.ContentTypeText,
@@ -268,7 +341,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		})
 
 		if a.eventLogger != nil {
-			a.eventLogger.Log(EventUserMessage, map[string]string{"text": input})
+			evt := map[string]any{"text": input}
+			if len(images) > 0 {
+				evt["image_count"] = len(images)
+			}
+			a.eventLogger.Log(EventUserMessage, evt)
 		}
 
 		if err := a.runAgentLoop(ctx); err != nil {
@@ -338,4 +415,3 @@ func (a *Agent) RunOnce(ctx context.Context, prompt string) error {
 	})
 	return a.runAgentLoop(ctx)
 }
-

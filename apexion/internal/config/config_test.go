@@ -23,6 +23,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ContextWindow != 0 {
 		t.Errorf("expected default context_window 0, got %d", cfg.ContextWindow)
 	}
+	if !cfg.ToolRouting.Enabled {
+		t.Error("expected tool_routing.enabled default true")
+	}
+	if cfg.ToolRouting.MaxCandidates != 0 {
+		t.Errorf("expected tool_routing.max_candidates default 0, got %d", cfg.ToolRouting.MaxCandidates)
+	}
+	if !cfg.ToolRouting.EnableRepair {
+		t.Error("expected tool_routing.enable_repair default true")
+	}
+	if !cfg.ToolRouting.EnableFallback {
+		t.Error("expected tool_routing.enable_fallback default true")
+	}
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
@@ -44,10 +56,21 @@ provider: deepseek
 model: deepseek-chat
 max_iterations: 50
 context_window: 64000
+tool_routing:
+  enabled: false
+  max_candidates: 6
+  enable_repair: false
+  enable_fallback: false
+  debug: true
 providers:
   deepseek:
     api_key: "sk-test"
     base_url: "https://api.deepseek.com/v1"
+    image_input: true
+    image_models_allow:
+      - "deepseek-vl*"
+    image_models_deny:
+      - "*-text"
 permissions:
   mode: "yolo"
   denied_commands:
@@ -73,9 +96,33 @@ permissions:
 	if cfg.ContextWindow != 64000 {
 		t.Errorf("expected context_window 64000, got %d", cfg.ContextWindow)
 	}
+	if cfg.ToolRouting.Enabled {
+		t.Error("expected tool_routing.enabled false from yaml")
+	}
+	if cfg.ToolRouting.MaxCandidates != 6 {
+		t.Errorf("expected tool_routing.max_candidates 6, got %d", cfg.ToolRouting.MaxCandidates)
+	}
+	if cfg.ToolRouting.EnableRepair {
+		t.Error("expected tool_routing.enable_repair false from yaml")
+	}
+	if cfg.ToolRouting.EnableFallback {
+		t.Error("expected tool_routing.enable_fallback false from yaml")
+	}
+	if !cfg.ToolRouting.Debug {
+		t.Error("expected tool_routing.debug true from yaml")
+	}
 	pc := cfg.GetProviderConfig("deepseek")
 	if pc.APIKey != "sk-test" {
 		t.Errorf("expected api_key 'sk-test', got %q", pc.APIKey)
+	}
+	if pc.ImageInput == nil || !*pc.ImageInput {
+		t.Errorf("expected image_input=true, got %+v", pc.ImageInput)
+	}
+	if len(pc.ImageModelsAllow) != 1 || pc.ImageModelsAllow[0] != "deepseek-vl*" {
+		t.Errorf("unexpected image_models_allow: %+v", pc.ImageModelsAllow)
+	}
+	if len(pc.ImageModelsDeny) != 1 || pc.ImageModelsDeny[0] != "*-text" {
+		t.Errorf("unexpected image_models_deny: %+v", pc.ImageModelsDeny)
 	}
 	if cfg.Permissions.Mode != "yolo" {
 		t.Errorf("expected permission mode 'yolo', got %q", cfg.Permissions.Mode)

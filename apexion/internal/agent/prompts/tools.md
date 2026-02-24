@@ -1,6 +1,6 @@
 <tool_strategy>
 Exploring an unfamiliar codebase:
-  list_dir → glob (find relevant files) → grep (find patterns/definitions) → read_file
+  repo_map → symbol_nav (key definitions/usages) → read_file
 
 Making a code change:
   read_file (understand current state) → edit_file (targeted change) → read_file (verify result)
@@ -54,6 +54,20 @@ glob / grep
 - Use grep to find where a symbol, function, or string is defined or used.
 - Combine both: glob to narrow scope, grep to find exact location.
 
+repo_map
+- Use first for unfamiliar repositories to get architecture-level context quickly.
+- It returns a compact map of files and exported symbols; use it to choose where to read next.
+
+symbol_nav
+- Prefer over broad grep when user asks about a specific symbol.
+- Use mode=definitions/references/both depending on the task.
+- Follow up with read_file on the most relevant hits.
+
+doc_context
+- Prefer this for library/framework API usage questions.
+- Provide topic plus optional library/version to improve precision.
+- Use web_fetch only when doc_context output indicates specific pages to read deeper.
+
 web_fetch
 - Use to read web pages, documentation, GitHub READMEs, blog posts, and other online content.
 - Always provide a specific prompt describing what information you need.
@@ -75,7 +89,7 @@ todo_write / todo_read
 
 task (sub-agent)
 - Use to delegate research, exploration, or search tasks to a sub-agent.
-- Sub-agents have read-only tools only (read_file, glob, grep, list_dir, web_fetch).
+- Sub-agents have read-only tools only (read_file, glob, grep, list_dir, repo_map, symbol_nav, doc_context, web_fetch).
 - Give specific, focused prompts: "Find all files that import package X and list their paths."
 - Use multiple task calls in parallel when exploring different aspects of the codebase.
 - Do NOT use for tasks that need file modification — do those yourself.

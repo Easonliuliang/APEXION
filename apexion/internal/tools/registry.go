@@ -73,6 +73,9 @@ func ReadOnlyRegistry() *Registry {
 	r.Register(&GlobTool{})
 	r.Register(&GrepTool{})
 	r.Register(&ListDirTool{})
+	r.Register(&RepoMapTool{})
+	r.Register(&SymbolNavTool{})
+	r.Register(NewDocContextTool("", ""))
 	r.Register(&WebFetchTool{})
 	r.Register(&TodoReadTool{})
 	r.Register(&GitLogTool{})
@@ -89,6 +92,9 @@ func CodeRegistry() *Registry {
 	r.Register(&GlobTool{})
 	r.Register(&GrepTool{})
 	r.Register(&ListDirTool{})
+	r.Register(&RepoMapTool{})
+	r.Register(&SymbolNavTool{})
+	r.Register(NewDocContextTool("", ""))
 	// Write tools
 	r.Register(&EditFileTool{})
 	r.Register(&WriteFileTool{})
@@ -128,7 +134,14 @@ func DefaultRegistry(webCfg *WebToolsConfig, bashCfg *BashToolConfig) *Registry 
 	r.Register(&TaskTool{})
 	r.Register(&TodoWriteTool{})
 	r.Register(&TodoReadTool{})
+	r.Register(&RepoMapTool{})
+	r.Register(&SymbolNavTool{})
 	r.Register(&WebFetchTool{})
+	if webCfg != nil {
+		r.Register(NewDocContextTool(webCfg.SearchProvider, webCfg.SearchAPIKey))
+	} else {
+		r.Register(NewDocContextTool("", ""))
+	}
 	if webCfg != nil {
 		r.Register(NewWebSearchTool(webCfg.SearchProvider, webCfg.SearchAPIKey))
 	} else {

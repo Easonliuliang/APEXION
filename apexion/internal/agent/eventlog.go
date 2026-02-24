@@ -20,6 +20,8 @@ const (
 	EventToolCall      EventType = "tool_call"
 	EventToolResult    EventType = "tool_result"
 	EventCompaction    EventType = "compaction"
+	EventToolRoute     EventType = "tool_route"
+	EventToolRepair    EventType = "tool_repair"
 	EventError         EventType = "error"
 	EventSessionStart  EventType = "session_start"
 	EventSessionEnd    EventType = "session_end"
@@ -45,28 +47,59 @@ type EventLogger struct {
 // NewEventLogger creates a new event logger for the given session.
 // Events are written to ~/.local/share/apexion/events/{session_id}.jsonl.
 func NewEventLogger(sessionID string) (*EventLogger, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("cannot determine home directory: %w", err)
+	var lastErr error
+	for _, dir := range eventLogDirs() {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			lastErr = fmt.Errorf("create events directory %s: %w", dir, err)
+			continue
+		}
+
+		logPath := filepath.Join(dir, sessionID+".jsonl")
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			lastErr = fmt.Errorf("open event log %s: %w", logPath, err)
+			continue
+		}
+
+		return &EventLogger{
+			file:      f,
+			enc:       json.NewEncoder(f),
+			sessionID: sessionID,
+			logPath:   logPath,
+		}, nil
 	}
 
-	dir := filepath.Join(home, ".local", "share", "apexion", "events")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create events directory: %w", err)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no writable events directory found")
+	}
+	return nil, lastErr
+}
+
+// eventLogDirs returns candidate directories in priority order.
+// 1) APEXION_EVENTS_DIR (explicit override)
+// 2) ~/.local/share/apexion/events (default)
+// 3) $TMPDIR/apexion/events (fallback for restricted environments)
+func eventLogDirs() []string {
+	seen := make(map[string]bool)
+	var dirs []string
+
+	add := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
 	}
 
-	logPath := filepath.Join(dir, sessionID+".jsonl")
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open event log: %w", err)
+	add(os.Getenv("APEXION_EVENTS_DIR"))
+
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".local", "share", "apexion", "events"))
 	}
 
-	return &EventLogger{
-		file:      f,
-		enc:       json.NewEncoder(f),
-		sessionID: sessionID,
-		logPath:   logPath,
-	}, nil
+	add(filepath.Join(os.TempDir(), "apexion", "events"))
+	return dirs
 }
 
 // Log writes an event to the JSONL file.
@@ -139,6 +172,8 @@ func FormatEvents(events []Event, title string) string {
 			case map[string]any:
 				if name, ok := d["tool_name"].(string); ok {
 					dataStr = name
+				} else if intent, ok := d["intent"].(string); ok {
+					dataStr = "intent=" + intent
 				} else if text, ok := d["text"].(string); ok {
 					dataStr = truncate(text, 80)
 				}

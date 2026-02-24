@@ -39,11 +39,11 @@ type Executor struct {
 	defaultTimeout time.Duration
 	toolCanceller  ToolCanceller
 	tracker        *FileTracker
-	confirmMu      sync.Mutex       // serializes confirmation dialogs during parallel execution
-	hooks          *HookManager     // pre/post tool hooks (nil = no hooks)
-	autoCommitter  *AutoCommitter   // auto-commit after file edits (nil = disabled)
-	linter         *Linter          // lint after file edits (nil = disabled)
-	testRunner     *TestRunner      // test after file edits (nil = disabled)
+	confirmMu      sync.Mutex     // serializes confirmation dialogs during parallel execution
+	hooks          *HookManager   // pre/post tool hooks (nil = no hooks)
+	autoCommitter  *AutoCommitter // auto-commit after file edits (nil = disabled)
+	linter         *Linter        // lint after file edits (nil = disabled)
+	testRunner     *TestRunner    // test after file edits (nil = disabled)
 }
 
 // NewExecutor creates a tool executor.
@@ -265,7 +265,7 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 // toolOutputLimit returns the output byte limit for a given tool.
 func toolOutputLimit(name string) int {
 	switch name {
-	case "read_file", "grep", "bash", "web_fetch", "web_search":
+	case "read_file", "grep", "bash", "web_fetch", "web_search", "repo_map", "symbol_nav", "doc_context":
 		return 32 * 1024 // 32KB ~8K tokens
 	case "git_diff", "git_status", "git_log", "git_branch", "list_dir", "glob":
 		return 16 * 1024 // 16KB

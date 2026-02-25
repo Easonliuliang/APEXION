@@ -17,6 +17,7 @@ func TestClassifyIntent(t *testing.T) {
 		{name: "research", text: "search latest docs online", want: IntentResearch},
 		{name: "research_github", text: "search github for examples", want: IntentResearch},
 		{name: "research_zh", text: "查一下 Go context 的最新官方文档和常见用法", want: IntentResearch},
+		{name: "research_url_docs", text: "访问 https://pkg.go.dev/context ，总结 Go context 常见用法", want: IntentResearch},
 		{name: "research_github_url", text: "帮我看看这个项目 https://github.com/ErlichLiu/Proma", want: IntentResearch},
 		{name: "research_compare", text: "它和我们的项目不同之处，优势等分析", want: IntentResearch},
 		{name: "research_stars", text: "它的点赞比我高", want: IntentResearch},
@@ -71,8 +72,11 @@ func TestPlanMaxCandidatesCreatesFallback(t *testing.T) {
 	if len(plan.Primary) != 2 {
 		t.Fatalf("expected 2 primary tools, got %d", len(plan.Primary))
 	}
-	if len(plan.Fallback) != 2 {
-		t.Fatalf("expected 2 fallback tools, got %d", len(plan.Fallback))
+	if len(plan.Fallback) != 0 {
+		t.Fatalf("expected 0 fallback tools after hard filter, got %d", len(plan.Fallback))
+	}
+	if len(plan.Filtered) == 0 {
+		t.Fatalf("expected filtered tools to be populated, got %+v", plan.Filtered)
 	}
 }
 
@@ -90,6 +94,9 @@ func TestPlanResearchDocsPrefersContext7WhenAvailable(t *testing.T) {
 	if len(plan.Primary) == 0 || plan.Primary[0].Name != "mcp__context7__resolve-library-id" {
 		t.Fatalf("expected context7 tool to rank first for docs query, got %+v", plan.Primary)
 	}
+	if plan.ReasonCode == "" {
+		t.Fatal("expected reason code for research docs route")
+	}
 }
 
 func TestPlanResearchGitHubPrefersGitHubToolWhenAvailable(t *testing.T) {
@@ -105,6 +112,61 @@ func TestPlanResearchGitHubPrefersGitHubToolWhenAvailable(t *testing.T) {
 
 	if len(plan.Primary) == 0 || plan.Primary[0].Name != "mcp__github__get_file_contents" {
 		t.Fatalf("expected github tool to rank first for github query, got %+v", plan.Primary)
+	}
+	if plan.ReasonCode == "" {
+		t.Fatal("expected reason code for research github route")
+	}
+}
+
+func TestPlanResearchDocsPolicyBlocksPrimitiveFirstTool(t *testing.T) {
+	plan := Plan(PlanInput{
+		UserText: "查一下 Go context 的最新官方文档和常见用法。",
+		Tools: []CandidateTool{
+			{Name: "read_file", ReadOnly: true},
+			{Name: "glob", ReadOnly: true},
+			{Name: "doc_context", ReadOnly: true},
+			{Name: "web_fetch", ReadOnly: true},
+		},
+	}, PlanOptions{})
+
+	if len(plan.Primary) == 0 {
+		t.Fatal("expected at least one primary tool")
+	}
+	if plan.Primary[0].Name == "read_file" || plan.Primary[0].Name == "glob" {
+		t.Fatalf("expected non-primitive first tool, got %s", plan.Primary[0].Name)
+	}
+	if plan.ReasonCode == "" {
+		t.Fatal("expected reason code to be populated")
+	}
+}
+
+func TestPlanCodebasePolicyPromotesSemanticFirstTool(t *testing.T) {
+	plan := Plan(PlanInput{
+		UserText: "请先快速理解这个仓库的架构，然后告诉我入口和关键模块",
+		Tools: []CandidateTool{
+			{Name: "bash", ReadOnly: true},
+			{Name: "glob", ReadOnly: true},
+			{Name: "repo_map", ReadOnly: true},
+			{Name: "symbol_nav", ReadOnly: true},
+		},
+	}, PlanOptions{})
+
+	if len(plan.Primary) == 0 {
+		t.Fatal("expected primary tools")
+	}
+	if plan.Primary[0].Name == "bash" {
+		t.Fatalf("expected semantic first tool, got %s", plan.Primary[0].Name)
+	}
+	if plan.Primary[0].Name != "repo_map" && plan.Primary[0].Name != "symbol_nav" {
+		t.Fatalf("expected repo_map/symbol_nav first, got %s", plan.Primary[0].Name)
+	}
+	for _, p := range plan.Primary {
+		if p.Name == "bash" || p.Name == "glob" {
+			t.Fatalf("expected hard first-step policy to filter disallowed tools, got %+v", plan.Primary)
+		}
+	}
+	if plan.ReasonCode == "" {
+		t.Fatal("expected reason code to be populated")
 	}
 }
 

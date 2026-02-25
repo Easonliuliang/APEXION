@@ -92,7 +92,7 @@ func (a *Agent) tryDeterministicFastpath(ctx context.Context, disableWebFetch bo
 	}
 
 	a.session.AddMessage(buildAssistantMessage("", []*provider.ToolCallRequest{call}))
-	results, wasInterrupted := a.executeSingleToolCall(ctx, call)
+	results, wasInterrupted, _ := a.executeSingleToolCall(ctx, call)
 	a.session.AddMessage(provider.Message{
 		Role:    provider.RoleUser,
 		Content: results,

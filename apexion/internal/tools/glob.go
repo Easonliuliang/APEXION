@@ -14,8 +14,8 @@ import (
 // GlobTool matches files using glob patterns.
 type GlobTool struct{}
 
-func (t *GlobTool) Name() string        { return "glob" }
-func (t *GlobTool) IsReadOnly() bool     { return true }
+func (t *GlobTool) Name() string                     { return "glob" }
+func (t *GlobTool) IsReadOnly() bool                 { return true }
 func (t *GlobTool) PermissionLevel() PermissionLevel { return PermissionRead }
 
 func (t *GlobTool) Description() string {
@@ -39,22 +39,6 @@ func (t *GlobTool) Parameters() map[string]any {
 }
 
 const maxGlobResults = 1000
-
-// Directories to skip during recursive traversal.
-var globSkipDirs = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	"vendor":       true,
-	"__pycache__":  true,
-	".next":        true,
-	"dist":         true,
-	"build":        true,
-	"target":       true,
-	".venv":        true,
-	".tox":         true,
-	".mypy_cache":  true,
-	".pytest_cache": true,
-}
 
 func (t *GlobTool) Execute(_ context.Context, params json.RawMessage) (ToolResult, error) {
 	var p struct {
@@ -140,7 +124,7 @@ func globRecursive(basePath, pattern string) ([]string, error) {
 
 		// Skip well-known large/irrelevant directories.
 		if d.IsDir() {
-			if globSkipDirs[d.Name()] {
+			if shouldSkipDir(path, d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil

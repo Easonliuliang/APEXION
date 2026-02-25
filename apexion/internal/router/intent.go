@@ -29,6 +29,15 @@ func ClassifyIntent(userText string, hasImage bool) Intent {
 		return IntentDebug
 	}
 
+	// Explicit docs/web cues (especially URL-based prompts) should route to research.
+	if containsAny(s,
+		"http://", "https://", "www.", "pkg.go.dev/", "go.dev/",
+		"官方文档", "查文档", "文档", "教程", "示例", "联网", "搜索", "官网", "用法",
+		"documentation", "docs", "official", "api reference", "guide", "latest",
+	) {
+		return IntentResearch
+	}
+
 	// Codebase understanding cues should stay local-first even if text mentions
 	// "repository/仓库". This avoids routing local architecture questions to research.
 	if containsAny(s,

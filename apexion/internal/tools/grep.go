@@ -14,8 +14,8 @@ import (
 // GrepTool recursively searches file contents.
 type GrepTool struct{}
 
-func (t *GrepTool) Name() string        { return "grep" }
-func (t *GrepTool) IsReadOnly() bool     { return true }
+func (t *GrepTool) Name() string                     { return "grep" }
+func (t *GrepTool) IsReadOnly() bool                 { return true }
 func (t *GrepTool) PermissionLevel() PermissionLevel { return PermissionRead }
 
 func (t *GrepTool) Description() string {
@@ -80,10 +80,12 @@ func (t *GrepTool) Execute(_ context.Context, params json.RawMessage) (ToolResul
 			return nil // skip inaccessible files
 		}
 		if info.IsDir() {
-			// Skip hidden directories
-			if strings.HasPrefix(info.Name(), ".") && path != p.Path {
+			if path != p.Path && shouldSkipDir(path, info.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if shouldSkipFilePath(path, info) {
 			return nil
 		}
 		// Apply glob filter
@@ -92,10 +94,6 @@ func (t *GrepTool) Execute(_ context.Context, params json.RawMessage) (ToolResul
 			if !matched {
 				return nil
 			}
-		}
-		// Skip binary/large files
-		if info.Size() > 1024*1024 {
-			return nil
 		}
 
 		if err := searchFile(path, re, &results); err != nil {

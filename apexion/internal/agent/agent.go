@@ -54,6 +54,11 @@ type Agent struct {
 	imageBridgeCacheMu sync.RWMutex
 	toolHealth         map[string]*toolHealthState
 	toolHealthMu       sync.RWMutex
+	firstStepAllowed   map[string]bool
+	firstStepPrimary   []string
+	firstStepRequire   bool
+	firstStepRetry     bool
+	firstStepAllowedMu sync.RWMutex
 }
 
 // New creates a new Agent with the given IO implementation.
@@ -106,6 +111,7 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 		costTracker:      NewCostTracker(costOverrides),
 		imageBridgeCache: make(map[string]string),
 		toolHealth:       make(map[string]*toolHealthState),
+		firstStepAllowed: make(map[string]bool),
 	}
 
 	// Initialize repo map (async build in background).

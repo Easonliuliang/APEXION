@@ -28,6 +28,8 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 	if disableWebFetchForImageTurn {
 		a.io.SystemMessage("Image attached: temporarily disabling web_fetch for this turn to avoid URL-fetch misrouting.")
 	}
+	// Reset first-step policy state at the beginning of each user turn.
+	a.clearFirstStepPolicy()
 
 	// Per-turn context: Esc cancels this, not the session.
 	turnCtx, turnCancel := context.WithCancel(ctx)
@@ -49,6 +51,7 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 	doomDetector := &doomLoopDetector{}
 	failDetector := &failureLoopDetector{}
 	fastpathTried := false
+	firstStepNoToolRetried := false
 
 	for iteration := 0; maxIter == 0 || iteration < maxIter; iteration++ {
 		// Check if the turn was cancelled before starting an iteration.
@@ -124,6 +127,13 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 					}
 					continue
 				}
+				if a.eventLogger != nil {
+					a.eventLogger.Log(EventError, map[string]any{
+						"error_class": "model_error",
+						"stage":       "chat_start",
+						"error":       truncateError(err),
+					})
+				}
 				return fmt.Errorf("LLM call failed: %w", err)
 			}
 
@@ -193,6 +203,13 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 
 			// Stream error after content was received — save partial content and continue.
 			if streamErr != nil {
+				if a.eventLogger != nil {
+					a.eventLogger.Log(EventError, map[string]any{
+						"error_class": "model_error",
+						"stage":       "stream",
+						"error":       truncateError(streamErr),
+					})
+				}
 				a.io.SystemMessage(fmt.Sprintf("Connection lost: %s (partial response preserved)", truncateError(streamErr)))
 				break // exit retry loop, process whatever we received
 			}
@@ -212,6 +229,20 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 		a.session.AddMessage(assistantMsg)
 
 		if len(toolCalls) == 0 {
+			if a.shouldRetryNoToolFirstStep() && !firstStepNoToolRetried {
+				firstStepNoToolRetried = true
+				a.markFirstStepRetry()
+				a.io.SystemMessage("Hard rule: debug intent requires at least one diagnostic tool call before final answer. Retrying once.")
+				a.session.AddMessage(provider.Message{
+					Role: provider.RoleUser,
+					Content: []provider.Content{{
+						Type: provider.ContentTypeText,
+						Text: a.firstStepRetryPrompt(),
+					}},
+				})
+				continue
+			}
+			a.clearFirstStepPolicy()
 			return nil
 		}
 
@@ -239,11 +270,24 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 			return nil
 		}
 
-		toolResults, interrupted := a.executeToolCalls(turnCtx, toolCalls)
+		toolResults, interrupted, executedAny := a.executeToolCalls(turnCtx, toolCalls)
 		a.session.AddMessage(provider.Message{
 			Role:    provider.RoleUser,
 			Content: toolResults,
 		})
+		if a.shouldRetryNoToolFirstStep() && !executedAny && !firstStepNoToolRetried {
+			firstStepNoToolRetried = true
+			a.markFirstStepRetry()
+			a.io.SystemMessage("Hard rule: debug intent requires executing at least one diagnostic tool. Retrying once.")
+			a.session.AddMessage(provider.Message{
+				Role: provider.RoleUser,
+				Content: []provider.Content{{
+					Type: provider.ContentTypeText,
+					Text: a.firstStepRetryPrompt(),
+				}},
+			})
+			continue
+		}
 
 		switch failDetector.check(toolCalls, toolResults) {
 		case doomLoopWarn:
@@ -300,7 +344,9 @@ func buildAssistantMessage(text string, toolCalls []*provider.ToolCallRequest) p
 // When multiple calls are present, they execute concurrently via goroutines.
 // Results are kept in the same order as the input calls.
 // The second return value is true if the user interrupted (Esc) during execution.
-func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCallRequest) ([]provider.Content, bool) {
+// The third return value indicates whether at least one tool was actually executed
+// (i.e. reached ToolStart, not blocked by first-step policy).
+func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCallRequest) ([]provider.Content, bool, bool) {
 	// Single call: run inline (no goroutine overhead).
 	if len(calls) == 1 {
 		return a.executeSingleToolCall(ctx, calls[0])
@@ -309,6 +355,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 	// Multiple calls: run concurrently.
 	type indexedResult struct {
 		contents []provider.Content // tool_result + optional image
+		executed bool
 	}
 
 	resultSlots := make([]indexedResult, len(calls))
@@ -322,6 +369,15 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 
 			// If another goroutine was interrupted, skip this one.
 			if interrupted.Load() {
+				return
+			}
+			if msg, blocked := a.blockByFirstStepPolicy(c.Name); blocked {
+				resultSlots[idx] = indexedResult{contents: []provider.Content{{
+					Type:       provider.ContentTypeToolResult,
+					ToolUseID:  c.ID,
+					ToolResult: msg,
+					IsError:    true,
+				}}}
 				return
 			}
 			if a.eventLogger != nil {
@@ -343,6 +399,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 					"executed_tool":          executedName,
 					"tool_id":                c.ID,
 					"is_error":               result.IsError,
+					"error_class":            result.ErrorClass,
 					"tool_health_score":      health.Score,
 					"tool_circuit_open":      health.CircuitOpen,
 					"tool_cooldown_sec":      health.CooldownRemainingSec,
@@ -367,7 +424,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 					ImageMediaType: result.ImageMediaType,
 				})
 			}
-			resultSlots[idx] = indexedResult{contents: contents}
+			resultSlots[idx] = indexedResult{contents: contents, executed: true}
 
 			if result.UserCancelled {
 				interrupted.Store(true)
@@ -380,11 +437,15 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 	// Assemble results in order, filling in cancelled placeholders for skipped calls.
 	var results []provider.Content
 	wasInterrupted := interrupted.Load()
+	executedAny := false
 
 	for i, call := range calls {
 		slot := resultSlots[i]
 		if len(slot.contents) > 0 {
 			results = append(results, slot.contents...)
+			if slot.executed {
+				executedAny = true
+			}
 		} else {
 			// This call was skipped due to interruption.
 			results = append(results, provider.Content{
@@ -396,11 +457,20 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 		}
 	}
 
-	return results, wasInterrupted
+	return results, wasInterrupted, executedAny
 }
 
 // executeSingleToolCall handles the simple case of a single tool call (no concurrency).
-func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCallRequest) ([]provider.Content, bool) {
+func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCallRequest) ([]provider.Content, bool, bool) {
+	if msg, blocked := a.blockByFirstStepPolicy(call.Name); blocked {
+		return []provider.Content{{
+			Type:       provider.ContentTypeToolResult,
+			ToolUseID:  call.ID,
+			ToolResult: msg,
+			IsError:    true,
+		}}, false, false
+	}
+
 	if a.eventLogger != nil {
 		a.eventLogger.Log(EventToolCall, map[string]any{
 			"tool_name": call.Name,
@@ -421,6 +491,7 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCa
 			"executed_tool":          executedName,
 			"tool_id":                call.ID,
 			"is_error":               result.IsError,
+			"error_class":            result.ErrorClass,
 			"tool_health_score":      health.Score,
 			"tool_circuit_open":      health.CircuitOpen,
 			"tool_cooldown_sec":      health.CooldownRemainingSec,
@@ -447,9 +518,9 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCa
 	}
 
 	if result.UserCancelled {
-		return results, true
+		return results, true, true
 	}
-	return results, false
+	return results, false, true
 }
 
 // maybeCompact runs three-stage auto-compaction if context is growing large.
@@ -621,12 +692,26 @@ func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 		})
 	}
 	if !a.config.ToolRouting.Enabled || len(schemas) == 0 {
+		a.clearFirstStepAllowed()
 		return schemas
 	}
 
 	userText, hasImage, hasToolResult := latestUserTurnContext(a.session.Messages)
+	if retryPrimary := a.retryPrimaryTools(); len(retryPrimary) > 0 {
+		ordered := make([]provider.ToolSchema, 0, len(retryPrimary))
+		for _, name := range retryPrimary {
+			if s, ok := schemaByName[name]; ok {
+				ordered = append(ordered, s)
+			}
+		}
+		if len(ordered) > 0 {
+			return ordered
+		}
+	}
 	if hasToolResult {
-		// Keep full tool set on tool_result rounds to avoid breaking multi-step chains.
+		// Normal tool_result rounds keep full tool set for multi-step chains.
+		// Retry rounds are handled above by retryPrimaryTools().
+		a.clearFirstStepPolicy()
 		return schemas
 	}
 
@@ -649,38 +734,21 @@ func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 	})
 
 	if len(plan.Primary) == 0 {
+		a.clearFirstStepPolicy()
 		return schemas
 	}
 
 	ordered := make([]provider.ToolSchema, 0, len(schemas))
-	seen := make(map[string]bool, len(schemas))
 	primaryNames := make([]string, 0, len(plan.Primary))
 	for _, p := range plan.Primary {
 		if s, ok := schemaByName[p.Name]; ok {
 			ordered = append(ordered, s)
-			seen[p.Name] = true
 			primaryNames = append(primaryNames, p.Name)
 		}
 	}
-	// When MaxCandidates is enabled, enforce a hard top-N gate so the model
-	// cannot bypass routing by selecting low-priority primitive tools.
-	if a.config.ToolRouting.MaxCandidates <= 0 {
-		for _, name := range plan.Fallback {
-			if seen[name] {
-				continue
-			}
-			if s, ok := schemaByName[name]; ok {
-				ordered = append(ordered, s)
-				seen[name] = true
-			}
-		}
-		// Safety net: keep any tool that was not explicitly listed.
-		for _, s := range schemas {
-			if !seen[s.Name] {
-				ordered = append(ordered, s)
-			}
-		}
-	}
+	a.setFirstStepPolicy(plan.Intent, primaryNames)
+	// Hard gate for first-step routing: only expose ranked primary tools on the
+	// initial user turn. Tool-result turns keep full tool set (see hasToolResult).
 
 	if a.eventLogger != nil {
 		eligible := len(candidates) - len(plan.Filtered)
@@ -690,6 +758,7 @@ func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 		payload := map[string]any{
 			"strategy":              strategy,
 			"intent":                plan.Intent,
+			"reason_code":           plan.ReasonCode,
 			"has_image":             hasImage,
 			"model_image_supported": modelImageSupported,
 			"eligible_tools":        eligible,
@@ -716,7 +785,10 @@ func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 		a.eventLogger.Log(EventToolRoute, payload)
 	}
 	if a.config.ToolRouting.Debug {
-		msg := fmt.Sprintf("Tool router: strategy=%s intent=%s primary=%s", strategy, plan.Intent, strings.Join(primaryNames, ", "))
+		msg := fmt.Sprintf(
+			"Tool router: strategy=%s intent=%s reason=%s primary=%s",
+			strategy, plan.Intent, plan.ReasonCode, strings.Join(primaryNames, ", "),
+		)
 		if plan.FastPath != nil {
 			msg = fmt.Sprintf("%s | fastpath=%s(%.2f)", msg, plan.FastPath.Tool, plan.FastPath.Confidence)
 		}
@@ -757,6 +829,105 @@ func latestUserTurnContext(messages []provider.Message) (text string, hasImage b
 		return strings.TrimSpace(strings.Join(parts, "\n")), hasImage, hasToolResult
 	}
 	return "", false, false
+}
+
+func (a *Agent) setFirstStepAllowed(names []string) {
+	a.setFirstStepPolicy("", names)
+}
+
+func (a *Agent) setFirstStepPolicy(intent router.Intent, names []string) {
+	a.firstStepAllowedMu.Lock()
+	defer a.firstStepAllowedMu.Unlock()
+	clear(a.firstStepAllowed)
+	a.firstStepPrimary = a.firstStepPrimary[:0]
+	a.firstStepRequire = intent == router.IntentDebug
+	a.firstStepRetry = false
+	for _, name := range names {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n == "" {
+			continue
+		}
+		a.firstStepAllowed[n] = true
+		a.firstStepPrimary = append(a.firstStepPrimary, n)
+	}
+}
+
+func (a *Agent) clearFirstStepAllowed() {
+	a.clearFirstStepPolicy()
+}
+
+func (a *Agent) clearFirstStepPolicy() {
+	a.firstStepAllowedMu.Lock()
+	defer a.firstStepAllowedMu.Unlock()
+	clear(a.firstStepAllowed)
+	a.firstStepPrimary = a.firstStepPrimary[:0]
+	a.firstStepRequire = false
+	a.firstStepRetry = false
+}
+
+func (a *Agent) shouldRetryNoToolFirstStep() bool {
+	a.firstStepAllowedMu.RLock()
+	requires := a.firstStepRequire && len(a.firstStepAllowed) > 0
+	a.firstStepAllowedMu.RUnlock()
+	if requires {
+		return true
+	}
+	if a.session == nil {
+		return false
+	}
+	userText, hasImage, hasToolResult := latestUserTurnContext(a.session.Messages)
+	if hasToolResult {
+		return false
+	}
+	return router.ClassifyIntent(userText, hasImage) == router.IntentDebug
+}
+
+func (a *Agent) markFirstStepRetry() {
+	a.firstStepAllowedMu.Lock()
+	defer a.firstStepAllowedMu.Unlock()
+	if !a.firstStepRequire || len(a.firstStepAllowed) == 0 {
+		return
+	}
+	a.firstStepRetry = true
+}
+
+func (a *Agent) retryPrimaryTools() []string {
+	a.firstStepAllowedMu.RLock()
+	defer a.firstStepAllowedMu.RUnlock()
+	if !a.firstStepRetry || len(a.firstStepPrimary) == 0 {
+		return nil
+	}
+	names := make([]string, len(a.firstStepPrimary))
+	copy(names, a.firstStepPrimary)
+	return names
+}
+
+func (a *Agent) firstStepRetryPrompt() string {
+	a.firstStepAllowedMu.RLock()
+	defer a.firstStepAllowedMu.RUnlock()
+	if len(a.firstStepPrimary) == 0 {
+		return "[SYSTEM] Hard rule for this debug task: call one diagnostic tool first, then answer based on tool output."
+	}
+	return fmt.Sprintf(
+		"[SYSTEM] Hard rule for this debug task: before giving conclusions, call one diagnostic tool first (%s), then answer based on tool output.",
+		strings.Join(a.firstStepPrimary, ", "),
+	)
+}
+
+func (a *Agent) blockByFirstStepPolicy(toolName string) (string, bool) {
+	a.firstStepAllowedMu.RLock()
+	defer a.firstStepAllowedMu.RUnlock()
+	if len(a.firstStepAllowed) == 0 {
+		return "", false
+	}
+	n := strings.ToLower(strings.TrimSpace(toolName))
+	if a.firstStepAllowed[n] {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"Blocked by first-step policy: tool %q is not allowed on initial turn. Use one of the routed primary tools first.",
+		toolName,
+	), true
 }
 
 // modelSamplingParams returns the recommended Temperature and TopP for a provider.

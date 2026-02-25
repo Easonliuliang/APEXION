@@ -106,12 +106,13 @@ type FilteredTool struct {
 
 // RoutePlan is the routing result for a turn.
 type RoutePlan struct {
-	Intent   Intent         `json:"intent"`
-	Primary  []PlannedTool  `json:"primary"`
-	Fallback []string       `json:"fallback,omitempty"`
-	Filtered []FilteredTool `json:"filtered,omitempty"`
-	Shadow   *ShadowPlan    `json:"shadow,omitempty"`
-	FastPath *FastPathPlan  `json:"fastpath,omitempty"`
+	Intent     Intent         `json:"intent"`
+	ReasonCode string         `json:"reason_code,omitempty"`
+	Primary    []PlannedTool  `json:"primary"`
+	Fallback   []string       `json:"fallback,omitempty"`
+	Filtered   []FilteredTool `json:"filtered,omitempty"`
+	Shadow     *ShadowPlan    `json:"shadow,omitempty"`
+	FastPath   *FastPathPlan  `json:"fastpath,omitempty"`
 }
 
 // ShadowPlan records a non-blocking shadow route for comparison.

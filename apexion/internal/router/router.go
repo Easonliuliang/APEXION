@@ -65,6 +65,8 @@ func planInternal(input PlanInput, maxCandidates int, capabilityV2 bool, opts Pl
 	}
 
 	researchMode := inferResearchFocus(plan.Intent, input.UserText)
+	policy := policyForIntent(plan.Intent, researchMode)
+	plan.ReasonCode = policy.ReasonCode
 	preferred := preferredTools(plan.Intent, researchMode)
 	preferredRank := make(map[string]int, len(preferred))
 	for i, name := range preferred {
@@ -100,6 +102,7 @@ func planInternal(input PlanInput, maxCandidates int, capabilityV2 bool, opts Pl
 		}
 		return scored[i].tool.Name < scored[j].tool.Name
 	})
+	scored = enforceFirstStepPolicy(scored, &plan, policy)
 
 	if maxCandidates > 0 && len(scored) > maxCandidates {
 		for _, st := range scored[maxCandidates:] {

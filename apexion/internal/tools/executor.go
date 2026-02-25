@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,7 +123,7 @@ func (e *Executor) Policy() permission.Policy {
 func (e *Executor) Execute(ctx context.Context, name string, params json.RawMessage) ToolResult {
 	tool, ok := e.registry.Get(name)
 	if !ok {
-		return ToolResult{Content: fmt.Sprintf("unknown tool: %s", name), IsError: true}
+		return ToolResult{Content: fmt.Sprintf("unknown tool: %s", name), IsError: true, ErrorClass: "tool_error"}
 	}
 
 	// Check if the loop context was already cancelled (user pressed Esc
@@ -140,7 +142,7 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 	case permission.Deny:
 		// Policy denial — NOT user cancellation. The LLM should see the
 		// reason and adjust its approach. Loop continues.
-		return ToolResult{Content: "Blocked: tool execution denied by policy", IsError: true}
+		return ToolResult{Content: "Blocked: tool execution denied by policy", IsError: true, ErrorClass: "tool_error"}
 	case permission.NeedConfirmation:
 		if e.confirmer != nil {
 			// Serialize confirmation prompts so only one dialog is shown at a time.
@@ -171,8 +173,9 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 		hookResult := e.hooks.RunPreHooks(ctx, name, params)
 		if hookResult.Blocked {
 			return ToolResult{
-				Content: fmt.Sprintf("Blocked by hook: %s", hookResult.Message),
-				IsError: true,
+				Content:    fmt.Sprintf("Blocked by hook: %s", hookResult.Message),
+				IsError:    true,
+				ErrorClass: "tool_error",
 			}
 		}
 	}
@@ -203,15 +206,30 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 
 	result, err := tool.Execute(ctx, params)
 	if err != nil {
-		if ctx.Err() == context.Canceled {
+		if errors.Is(ctx.Err(), context.Canceled) {
 			// User pressed Esc during tool execution.
 			return ToolResult{
 				Content:       "[User cancelled — tool was not executed]",
 				IsError:       false,
+				ErrorClass:    "cancelled",
 				UserCancelled: true,
 			}
 		}
-		return ToolResult{Content: fmt.Sprintf("error: %v", err), IsError: true}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return ToolResult{
+				Content:    fmt.Sprintf("error: tool timed out after %.0fs", e.defaultTimeout.Seconds()),
+				IsError:    true,
+				ErrorClass: "timeout",
+			}
+		}
+		return ToolResult{
+			Content:    fmt.Sprintf("error: %v", err),
+			IsError:    true,
+			ErrorClass: classifyToolErrorText(err.Error()),
+		}
+	}
+	if result.IsError && result.ErrorClass == "" {
+		result.ErrorClass = classifyToolErrorText(result.Content)
 	}
 
 	// Track file changes on successful write operations.
@@ -260,6 +278,22 @@ func (e *Executor) Execute(ctx context.Context, name string, params json.RawMess
 	}
 
 	return result
+}
+
+func classifyToolErrorText(msg string) string {
+	s := strings.ToLower(strings.TrimSpace(msg))
+	switch {
+	case strings.Contains(s, "deadline exceeded"),
+		strings.Contains(s, "timed out"),
+		strings.Contains(s, "timeout"),
+		strings.Contains(s, "alarm clock"):
+		return "timeout"
+	case strings.Contains(s, "cancelled"),
+		strings.Contains(s, "canceled"):
+		return "cancelled"
+	default:
+		return "tool_error"
+	}
 }
 
 // toolOutputLimit returns the output byte limit for a given tool.

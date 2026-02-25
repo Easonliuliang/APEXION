@@ -12,15 +12,16 @@ type PermissionLevel int
 
 const (
 	PermissionRead      PermissionLevel = iota // read-only: auto-allow
-	PermissionWrite                             // write: prompt by default
-	PermissionExecute                           // execute: prompt by default (shows command)
-	PermissionDangerous                         // dangerous: force confirmation (prominent warning)
+	PermissionWrite                            // write: prompt by default
+	PermissionExecute                          // execute: prompt by default (shows command)
+	PermissionDangerous                        // dangerous: force confirmation (prominent warning)
 )
 
 // ToolResult is the result of a tool execution.
 type ToolResult struct {
 	Content        string // primary output content
 	IsError        bool   // whether this is an error result
+	ErrorClass     string // standardized error class: timeout/tool_error/model_error/cancelled
 	Truncated      bool   // whether content was truncated
 	UserCancelled  bool   // user interrupted (Esc), should stop agent loop
 	ImageData      string // base64-encoded image data (set by read_file for images)

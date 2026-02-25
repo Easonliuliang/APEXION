@@ -115,16 +115,12 @@ func (t *SymbolNavTool) Execute(_ context.Context, params json.RawMessage) (Tool
 				return nil
 			}
 			if fi.IsDir() {
-				switch fi.Name() {
-				case ".git", "node_modules", "vendor", ".next", "dist", "build", "target", "__pycache__":
-					return filepath.SkipDir
-				}
-				if strings.HasPrefix(fi.Name(), ".") && path != root {
+				if path != root && shouldSkipDir(path, fi.Name()) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if fi.Size() > 1024*1024 || !isSymbolSourceFile(path) {
+			if shouldSkipFilePath(path, fi) || !isSymbolSourceFile(path) {
 				return nil
 			}
 			scanSymbolFile(root, path, p.Mode, defRE, refRE, p.MaxResults, &defs, &refs)

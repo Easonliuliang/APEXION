@@ -97,14 +97,38 @@ type WebConfig struct {
 	SearchAPIKey string `yaml:"search_api_key"`
 }
 
+// CircuitBreakerConfig holds tool failure isolation settings.
+type CircuitBreakerConfig struct {
+	// Enabled toggles tool-level failure isolation.
+	Enabled bool `yaml:"enabled"`
+	// FailThreshold opens circuit after N consecutive failures.
+	FailThreshold int `yaml:"fail_threshold"`
+	// CooldownSec keeps circuit open for this duration.
+	CooldownSec int `yaml:"cooldown_sec"`
+}
+
 // ToolRoutingConfig holds settings for tool routing strategy.
 type ToolRoutingConfig struct {
 	// Enabled toggles Tool Router planning before each model turn.
 	Enabled bool `yaml:"enabled"`
 
+	// Strategy selects routing policy: legacy | hybrid | capability_v2.
+	Strategy string `yaml:"strategy"`
+
 	// MaxCandidates limits how many tools are exposed after routing.
 	// 0 means no cap.
 	MaxCandidates int `yaml:"max_candidates"`
+
+	// ShadowEval records capability_v2 plan alongside legacy/hybrid plan for comparison.
+	ShadowEval bool `yaml:"shadow_eval"`
+	// ShadowSampleRate controls probabilistic shadow routing for metrics.
+	// 1.0 = all requests, 0 = disabled.
+	ShadowSampleRate float64 `yaml:"shadow_sample_rate"`
+
+	// DeterministicFastpath allows direct execution for high-confidence deterministic tasks.
+	DeterministicFastpath bool `yaml:"deterministic_fastpath"`
+	// FastpathConfidence is the minimum confidence threshold for fastpath.
+	FastpathConfidence float64 `yaml:"fastpath_confidence"`
 
 	// EnableRepair toggles automatic tool-name and argument repair.
 	EnableRepair bool `yaml:"enable_repair"`
@@ -114,6 +138,9 @@ type ToolRoutingConfig struct {
 
 	// Debug emits route trace hints in UI messages.
 	Debug bool `yaml:"debug"`
+
+	// CircuitBreaker isolates unstable tools from repeatedly failing.
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 }
 
 // SandboxConfig holds settings for bash tool sandboxing.
@@ -234,11 +261,21 @@ func DefaultConfig() *Config {
 			},
 		},
 		ToolRouting: ToolRoutingConfig{
-			Enabled:        true,
-			MaxCandidates:  0,
-			EnableRepair:   true,
-			EnableFallback: true,
-			Debug:          false,
+			Enabled:               true,
+			Strategy:              "legacy",
+			MaxCandidates:         0,
+			ShadowEval:            false,
+			ShadowSampleRate:      1.0,
+			DeterministicFastpath: false,
+			FastpathConfidence:    0.85,
+			EnableRepair:          true,
+			EnableFallback:        true,
+			Debug:                 false,
+			CircuitBreaker: CircuitBreakerConfig{
+				Enabled:       true,
+				FailThreshold: 3,
+				CooldownSec:   120,
+			},
 		},
 	}
 }

@@ -31,7 +31,12 @@ type EvalDataset struct {
 
 // EvalOptions controls evaluation behavior.
 type EvalOptions struct {
-	MaxCandidates int
+	MaxCandidates         int
+	Strategy              RoutingStrategy
+	ShadowEval            bool
+	ShadowSampleRate      float64
+	DeterministicFastpath bool
+	FastpathConfidence    float64
 }
 
 // EvalCaseResult is the evaluated result for one sample.
@@ -44,6 +49,8 @@ type EvalCaseResult struct {
 
 	PrimaryTools  []string `json:"primary_tools"`
 	FilteredTools []string `json:"filtered_tools,omitempty"`
+	ShadowTools   []string `json:"shadow_tools,omitempty"`
+	FastPathTool  string   `json:"fastpath_tool,omitempty"`
 
 	Failures []string `json:"failures,omitempty"`
 }
@@ -63,6 +70,9 @@ type EvalSummary struct {
 	FilteredChecks    int `json:"filtered_checks"`
 	FilteredCorrect   int `json:"filtered_correct"`
 	MaxCandidatesUsed int `json:"max_candidates_used"`
+	ShadowChecks      int `json:"shadow_checks"`
+	ShadowTopDiff     int `json:"shadow_top_diff"`
+	FastpathHits      int `json:"fastpath_hits"`
 }
 
 func (s EvalSummary) IntentAccuracy() float64 {
@@ -129,7 +139,12 @@ func EvaluateDataset(ds *EvalDataset, available []CandidateTool, opts EvalOption
 			ModelImageSupported: c.ModelImageSupported,
 			Tools:               available,
 		}, PlanOptions{
-			MaxCandidates: opts.MaxCandidates,
+			MaxCandidates:         opts.MaxCandidates,
+			Strategy:              opts.Strategy,
+			ShadowEval:            opts.ShadowEval,
+			ShadowSampleRate:      opts.ShadowSampleRate,
+			DeterministicFastpath: opts.DeterministicFastpath,
+			FastpathConfidence:    opts.FastpathConfidence,
 		})
 
 		r := EvalCaseResult{
@@ -139,6 +154,17 @@ func EvaluateDataset(ds *EvalDataset, available []CandidateTool, opts EvalOption
 			PrimaryTools:   plannedNames(plan.Primary),
 			FilteredTools:  filteredNames(plan.Filtered),
 			Passed:         true,
+		}
+		if plan.Shadow != nil {
+			r.ShadowTools = plannedNames(plan.Shadow.Primary)
+			summary.ShadowChecks++
+			if topToolName(r.PrimaryTools) != topToolName(r.ShadowTools) {
+				summary.ShadowTopDiff++
+			}
+		}
+		if plan.FastPath != nil {
+			r.FastPathTool = plan.FastPath.Tool
+			summary.FastpathHits++
 		}
 
 		summary.IntentChecks++
@@ -233,4 +259,11 @@ func missingFrom(got, expected []string) []string {
 		}
 	}
 	return missing
+}
+
+func topToolName(in []string) string {
+	if len(in) == 0 {
+		return ""
+	}
+	return in[0]
 }

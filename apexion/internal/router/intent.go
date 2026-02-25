@@ -29,6 +29,16 @@ func ClassifyIntent(userText string, hasImage bool) Intent {
 		return IntentDebug
 	}
 
+	// Codebase understanding cues should stay local-first even if text mentions
+	// "repository/仓库". This avoids routing local architecture questions to research.
+	if containsAny(s,
+		"repository architecture", "repo architecture", "key modules", "main entrypoint", "startup flow",
+		"架构", "入口", "关键模块", "调用链", "定义在哪里", "在哪定义", "仓库结构", "项目结构",
+	) ||
+		containsTokenAny(tokens, "architecture", "entrypoint", "startup", "module", "modules", "callchain", "symbol", "defined", "implementation") {
+		return IntentCodebase
+	}
+
 	if containsAny(s, "github.com/") ||
 		containsTokenAny(tokens, "docs", "documentation", "github", "latest", "recent", "official", "repo", "repository", "star", "stars", "compare") ||
 		containsAny(s,

@@ -13,11 +13,16 @@ import (
 
 func newEvalToolRoutingCmd() *cobra.Command {
 	var (
-		datasetPath         string
-		maxCandidates       int
-		jsonOutput          bool
-		strict              bool
-		includeSyntheticMCP bool
+		datasetPath           string
+		maxCandidates         int
+		jsonOutput            bool
+		strict                bool
+		includeSyntheticMCP   bool
+		strategy              string
+		shadowEval            bool
+		shadowSampleRate      float64
+		deterministicFastpath bool
+		fastpathConfidence    float64
 	)
 
 	cmd := &cobra.Command{
@@ -48,7 +53,12 @@ func newEvalToolRoutingCmd() *cobra.Command {
 			}
 
 			summary, results := router.EvaluateDataset(ds, candidates, router.EvalOptions{
-				MaxCandidates: maxCandidates,
+				MaxCandidates:         maxCandidates,
+				Strategy:              router.RoutingStrategy(strategy),
+				ShadowEval:            shadowEval,
+				ShadowSampleRate:      shadowSampleRate,
+				DeterministicFastpath: deterministicFastpath,
+				FastpathConfidence:    fastpathConfidence,
 			})
 
 			if jsonOutput {
@@ -61,7 +71,7 @@ func newEvalToolRoutingCmd() *cobra.Command {
 				b, _ := json.MarshalIndent(payload, "", "  ")
 				fmt.Println(string(b))
 			} else {
-				printEvalSummary(datasetPath, ds.Version, summary)
+				printEvalSummary(datasetPath, ds.Version, strategy, summary)
 				printEvalFailures(results, 12)
 			}
 
@@ -77,6 +87,11 @@ func newEvalToolRoutingCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "print JSON output")
 	cmd.Flags().BoolVar(&strict, "strict", false, "return non-zero when any case fails")
 	cmd.Flags().BoolVar(&includeSyntheticMCP, "include-synthetic-mcp", true, "inject mcp__minimax__understand_image for offline vision cases")
+	cmd.Flags().StringVar(&strategy, "strategy", string(router.RoutingLegacy), "routing strategy: legacy | hybrid | capability_v2")
+	cmd.Flags().BoolVar(&shadowEval, "shadow-eval", false, "emit shadow route diff metrics")
+	cmd.Flags().Float64Var(&shadowSampleRate, "shadow-sample-rate", 1.0, "shadow routing sample rate [0,1]")
+	cmd.Flags().BoolVar(&deterministicFastpath, "deterministic-fastpath", false, "enable deterministic fastpath scoring in router eval")
+	cmd.Flags().Float64Var(&fastpathConfidence, "fastpath-confidence", 0.85, "minimum confidence for fastpath emission")
 	return cmd
 }
 
@@ -89,14 +104,21 @@ func hasCandidate(cands []router.CandidateTool, name string) bool {
 	return false
 }
 
-func printEvalSummary(datasetPath, version string, s router.EvalSummary) {
+func printEvalSummary(datasetPath, version, strategy string, s router.EvalSummary) {
 	fmt.Printf("Tool Routing Evaluation\n")
 	fmt.Printf("Dataset: %s (version=%s)\n", datasetPath, version)
+	fmt.Printf("Strategy: %s\n", strategy)
 	fmt.Printf("Total: %d  Pass: %d  Fail: %d\n", s.Total, s.Pass, s.Fail)
 	fmt.Printf("Intent:   %d/%d (%.1f%%)\n", s.IntentCorrect, s.IntentChecks, 100*s.IntentAccuracy())
 	fmt.Printf("Top hit:  %d/%d (%.1f%%)\n", s.TopCorrect, s.TopChecks, 100*s.TopHitRate())
 	fmt.Printf("Contain:  %d/%d (%.1f%%)\n", s.ContainCorrect, s.ContainChecks, 100*s.ContainHitRate())
 	fmt.Printf("Filtered: %d/%d (%.1f%%)\n", s.FilteredCorrect, s.FilteredChecks, 100*s.FilteredHitRate())
+	if s.ShadowChecks > 0 {
+		fmt.Printf("Shadow diff(top1): %d/%d\n", s.ShadowTopDiff, s.ShadowChecks)
+	}
+	if s.FastpathHits > 0 {
+		fmt.Printf("Fastpath hits: %d/%d\n", s.FastpathHits, s.Total)
+	}
 }
 
 func printEvalFailures(results []router.EvalCaseResult, maxLines int) {

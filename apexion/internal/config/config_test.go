@@ -26,14 +26,38 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.ToolRouting.Enabled {
 		t.Error("expected tool_routing.enabled default true")
 	}
+	if cfg.ToolRouting.Strategy != "legacy" {
+		t.Errorf("expected tool_routing.strategy default legacy, got %q", cfg.ToolRouting.Strategy)
+	}
 	if cfg.ToolRouting.MaxCandidates != 0 {
 		t.Errorf("expected tool_routing.max_candidates default 0, got %d", cfg.ToolRouting.MaxCandidates)
+	}
+	if cfg.ToolRouting.ShadowEval {
+		t.Error("expected tool_routing.shadow_eval default false")
+	}
+	if cfg.ToolRouting.ShadowSampleRate != 1.0 {
+		t.Errorf("expected tool_routing.shadow_sample_rate default 1.0, got %f", cfg.ToolRouting.ShadowSampleRate)
+	}
+	if cfg.ToolRouting.DeterministicFastpath {
+		t.Error("expected tool_routing.deterministic_fastpath default false")
+	}
+	if cfg.ToolRouting.FastpathConfidence != 0.85 {
+		t.Errorf("expected tool_routing.fastpath_confidence default 0.85, got %f", cfg.ToolRouting.FastpathConfidence)
 	}
 	if !cfg.ToolRouting.EnableRepair {
 		t.Error("expected tool_routing.enable_repair default true")
 	}
 	if !cfg.ToolRouting.EnableFallback {
 		t.Error("expected tool_routing.enable_fallback default true")
+	}
+	if !cfg.ToolRouting.CircuitBreaker.Enabled {
+		t.Error("expected tool_routing.circuit_breaker.enabled default true")
+	}
+	if cfg.ToolRouting.CircuitBreaker.FailThreshold != 3 {
+		t.Errorf("expected tool_routing.circuit_breaker.fail_threshold default 3, got %d", cfg.ToolRouting.CircuitBreaker.FailThreshold)
+	}
+	if cfg.ToolRouting.CircuitBreaker.CooldownSec != 120 {
+		t.Errorf("expected tool_routing.circuit_breaker.cooldown_sec default 120, got %d", cfg.ToolRouting.CircuitBreaker.CooldownSec)
 	}
 }
 
@@ -58,10 +82,19 @@ max_iterations: 50
 context_window: 64000
 tool_routing:
   enabled: false
+  strategy: hybrid
   max_candidates: 6
+  shadow_eval: true
+  shadow_sample_rate: 0.5
+  deterministic_fastpath: true
+  fastpath_confidence: 0.9
   enable_repair: false
   enable_fallback: false
   debug: true
+  circuit_breaker:
+    enabled: true
+    fail_threshold: 4
+    cooldown_sec: 60
 providers:
   deepseek:
     api_key: "sk-test"
@@ -99,8 +132,23 @@ permissions:
 	if cfg.ToolRouting.Enabled {
 		t.Error("expected tool_routing.enabled false from yaml")
 	}
+	if cfg.ToolRouting.Strategy != "hybrid" {
+		t.Errorf("expected tool_routing.strategy hybrid, got %q", cfg.ToolRouting.Strategy)
+	}
 	if cfg.ToolRouting.MaxCandidates != 6 {
 		t.Errorf("expected tool_routing.max_candidates 6, got %d", cfg.ToolRouting.MaxCandidates)
+	}
+	if !cfg.ToolRouting.ShadowEval {
+		t.Error("expected tool_routing.shadow_eval true from yaml")
+	}
+	if cfg.ToolRouting.ShadowSampleRate != 0.5 {
+		t.Errorf("expected tool_routing.shadow_sample_rate 0.5, got %f", cfg.ToolRouting.ShadowSampleRate)
+	}
+	if !cfg.ToolRouting.DeterministicFastpath {
+		t.Error("expected tool_routing.deterministic_fastpath true from yaml")
+	}
+	if cfg.ToolRouting.FastpathConfidence != 0.9 {
+		t.Errorf("expected tool_routing.fastpath_confidence 0.9, got %f", cfg.ToolRouting.FastpathConfidence)
 	}
 	if cfg.ToolRouting.EnableRepair {
 		t.Error("expected tool_routing.enable_repair false from yaml")
@@ -110,6 +158,15 @@ permissions:
 	}
 	if !cfg.ToolRouting.Debug {
 		t.Error("expected tool_routing.debug true from yaml")
+	}
+	if !cfg.ToolRouting.CircuitBreaker.Enabled {
+		t.Error("expected circuit_breaker.enabled true from yaml")
+	}
+	if cfg.ToolRouting.CircuitBreaker.FailThreshold != 4 {
+		t.Errorf("expected circuit_breaker.fail_threshold 4, got %d", cfg.ToolRouting.CircuitBreaker.FailThreshold)
+	}
+	if cfg.ToolRouting.CircuitBreaker.CooldownSec != 60 {
+		t.Errorf("expected circuit_breaker.cooldown_sec 60, got %d", cfg.ToolRouting.CircuitBreaker.CooldownSec)
 	}
 	pc := cfg.GetProviderConfig("deepseek")
 	if pc.APIKey != "sk-test" {

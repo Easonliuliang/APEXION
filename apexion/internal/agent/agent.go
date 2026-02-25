@@ -52,6 +52,8 @@ type Agent struct {
 	// repeated prompts on the same attachment can skip extra MCP calls.
 	imageBridgeCache   map[string]string
 	imageBridgeCacheMu sync.RWMutex
+	toolHealth         map[string]*toolHealthState
+	toolHealthMu       sync.RWMutex
 }
 
 // New creates a new Agent with the given IO implementation.
@@ -103,6 +105,7 @@ func NewWithSession(p provider.Provider, exec *tools.Executor, cfg *config.Confi
 		skills:           loadSkills(cwd),
 		costTracker:      NewCostTracker(costOverrides),
 		imageBridgeCache: make(map[string]string),
+		toolHealth:       make(map[string]*toolHealthState),
 	}
 
 	// Initialize repo map (async build in background).

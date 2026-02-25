@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/apexion-ai/apexion/internal/provider"
+	"github.com/apexion-ai/apexion/internal/router"
 	"github.com/apexion-ai/apexion/internal/tools"
 )
 
@@ -24,7 +26,20 @@ func (a *Agent) executeToolWithRepair(ctx context.Context, call *provider.ToolCa
 		enableFallback = false
 	}
 
-	res := a.executor.Execute(ctx, executedName, input)
+	executeWithHealth := func(toolName string, args json.RawMessage) (tools.ToolResult, bool) {
+		now := time.Now()
+		if ok, reason := a.canExecuteTool(toolName, now); !ok {
+			return tools.ToolResult{
+				Content: reason,
+				IsError: true,
+			}, true
+		}
+		out := a.executor.Execute(ctx, toolName, args)
+		a.recordToolOutcome(toolName, out.IsError, out.Content, now)
+		return out, false
+	}
+
+	res, _ := executeWithHealth(executedName, input)
 	if !enableRepair && !enableFallback {
 		return res, executedName, notes
 	}
@@ -40,7 +55,7 @@ func (a *Agent) executeToolWithRepair(ctx context.Context, call *provider.ToolCa
 			}
 			executedName = repaired
 			input = repairedInput
-			res = a.executor.Execute(ctx, executedName, input)
+			res, _ = executeWithHealth(executedName, input)
 		}
 	}
 
@@ -50,7 +65,7 @@ func (a *Agent) executeToolWithRepair(ctx context.Context, call *provider.ToolCa
 		if changed {
 			notes = append(notes, fmt.Sprintf("repaired arguments for `%s`", executedName))
 			input = repairedInput
-			res = a.executor.Execute(ctx, executedName, input)
+			res, _ = executeWithHealth(executedName, input)
 		}
 	}
 
@@ -61,8 +76,11 @@ func (a *Agent) executeToolWithRepair(ctx context.Context, call *provider.ToolCa
 				continue
 			}
 			fbInput, _ := repairToolArgs(fb, input)
-			next := a.executor.Execute(ctx, fb, fbInput)
+			next, blocked := executeWithHealth(fb, fbInput)
 			notes = append(notes, fmt.Sprintf("fallback `%s` -> `%s`", executedName, fb))
+			if blocked {
+				notes = append(notes, fmt.Sprintf("fallback `%s` blocked by circuit breaker", fb))
+			}
 			if !next.IsError {
 				executedName = fb
 				res = next
@@ -75,11 +93,18 @@ func (a *Agent) executeToolWithRepair(ctx context.Context, call *provider.ToolCa
 		prefix := "[Tool repair]\n- " + strings.Join(notes, "\n- ") + "\n\n"
 		res.Content = prefix + res.Content
 		if a.eventLogger != nil {
+			health := a.toolHealthSnapshot(executedName, time.Now())
 			a.eventLogger.Log(EventToolRepair, map[string]any{
-				"tool_name":      call.Name,
-				"executed_tool":  executedName,
-				"repair_actions": notes,
-				"is_error":       res.IsError,
+				"tool_name":              call.Name,
+				"executed_tool":          executedName,
+				"repair_actions":         notes,
+				"is_error":               res.IsError,
+				"tool_health_score":      health.Score,
+				"tool_circuit_open":      health.CircuitOpen,
+				"tool_cooldown_sec":      health.CooldownRemainingSec,
+				"tool_successes_total":   health.Successes,
+				"tool_failures_total":    health.Failures,
+				"tool_consecutive_fails": health.ConsecutiveFails,
 			})
 		}
 	}
@@ -254,24 +279,7 @@ func repairToolArgs(toolName string, raw json.RawMessage) (json.RawMessage, bool
 }
 
 func fallbackTools(toolName string) []string {
-	switch toolName {
-	case "doc_context":
-		return []string{"web_search", "web_fetch"}
-	case "symbol_nav":
-		return []string{"grep", "read_file"}
-	case "repo_map":
-		return []string{"list_dir", "glob"}
-	case "web_fetch":
-		return []string{"web_search"}
-	case "web_search":
-		return []string{"web_fetch"}
-	case "grep":
-		return []string{"glob", "read_file"}
-	case "read_file":
-		return []string{"list_dir"}
-	default:
-		return nil
-	}
+	return router.DegradePolicyForTool(toolName)
 }
 
 func isUnknownToolError(s string) bool {

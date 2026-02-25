@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/apexion-ai/apexion/internal/provider"
 	"github.com/apexion-ai/apexion/internal/router"
@@ -47,6 +48,7 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 
 	doomDetector := &doomLoopDetector{}
 	failDetector := &failureLoopDetector{}
+	fastpathTried := false
 
 	for iteration := 0; maxIter == 0 || iteration < maxIter; iteration++ {
 		// Check if the turn was cancelled before starting an iteration.
@@ -57,6 +59,19 @@ func (a *Agent) runAgentLoop(ctx context.Context) error {
 
 		// Lazy MCP: connect/register only servers needed for the current turn.
 		a.ensureMCPToolsForCurrentTurn(turnCtx)
+
+		// Optional deterministic fastpath: for high-confidence tasks (e.g. symbol lookup,
+		// repo overview), execute one tool directly before the model round.
+		if !fastpathTried {
+			fastpathTried = true
+			if ran, interrupted := a.tryDeterministicFastpath(turnCtx, disableWebFetchForImageTurn && iteration == 0); ran {
+				if interrupted {
+					a.io.SystemMessage("Interrupted.")
+					return nil
+				}
+				continue
+			}
+		}
 
 		// Two-stage auto-compaction.
 		a.maybeCompact(turnCtx, budget)
@@ -309,10 +324,34 @@ func (a *Agent) executeToolCalls(ctx context.Context, calls []*provider.ToolCall
 			if interrupted.Load() {
 				return
 			}
+			if a.eventLogger != nil {
+				a.eventLogger.Log(EventToolCall, map[string]any{
+					"tool_name": c.Name,
+					"tool_id":   c.ID,
+				})
+			}
 
 			a.io.ToolStart(c.ID, c.Name, string(c.Input))
+			started := time.Now()
 			result, executedName, _ := a.executeToolWithRepair(ctx, c)
+			latencyMs := time.Since(started).Milliseconds()
 			a.io.ToolDone(c.ID, executedName, result.Content, result.IsError)
+			if a.eventLogger != nil {
+				health := a.toolHealthSnapshot(executedName, time.Now())
+				a.eventLogger.Log(EventToolResult, map[string]any{
+					"tool_name":              c.Name,
+					"executed_tool":          executedName,
+					"tool_id":                c.ID,
+					"is_error":               result.IsError,
+					"tool_health_score":      health.Score,
+					"tool_circuit_open":      health.CircuitOpen,
+					"tool_cooldown_sec":      health.CooldownRemainingSec,
+					"tool_successes_total":   health.Successes,
+					"tool_failures_total":    health.Failures,
+					"tool_exec_latency_ms":   latencyMs,
+					"tool_consecutive_fails": health.ConsecutiveFails,
+				})
+			}
 
 			var contents []provider.Content
 			contents = append(contents, provider.Content{
@@ -370,15 +409,25 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, call *provider.ToolCa
 	}
 
 	a.io.ToolStart(call.ID, call.Name, string(call.Input))
+	started := time.Now()
 	result, executedName, _ := a.executeToolWithRepair(ctx, call)
+	latencyMs := time.Since(started).Milliseconds()
 	a.io.ToolDone(call.ID, executedName, result.Content, result.IsError)
 
 	if a.eventLogger != nil {
+		health := a.toolHealthSnapshot(executedName, time.Now())
 		a.eventLogger.Log(EventToolResult, map[string]any{
-			"tool_name":     call.Name,
-			"executed_tool": executedName,
-			"tool_id":       call.ID,
-			"is_error":      result.IsError,
+			"tool_name":              call.Name,
+			"executed_tool":          executedName,
+			"tool_id":                call.ID,
+			"is_error":               result.IsError,
+			"tool_health_score":      health.Score,
+			"tool_circuit_open":      health.CircuitOpen,
+			"tool_cooldown_sec":      health.CooldownRemainingSec,
+			"tool_successes_total":   health.Successes,
+			"tool_failures_total":    health.Failures,
+			"tool_exec_latency_ms":   latencyMs,
+			"tool_consecutive_fails": health.ConsecutiveFails,
 		})
 	}
 
@@ -582,6 +631,7 @@ func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 	}
 
 	modelImageSupported, _, model := a.imageInputSupport()
+	strategy := router.NormalizeRoutingStrategy(router.RoutingStrategy(a.config.ToolRouting.Strategy))
 	plan := router.Plan(router.PlanInput{
 		UserText:            userText,
 		HasImage:            hasImage,
@@ -590,7 +640,12 @@ func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 		Model:               model,
 		Tools:               candidates,
 	}, router.PlanOptions{
-		MaxCandidates: a.config.ToolRouting.MaxCandidates,
+		MaxCandidates:         a.config.ToolRouting.MaxCandidates,
+		Strategy:              strategy,
+		ShadowEval:            a.config.ToolRouting.ShadowEval,
+		ShadowSampleRate:      a.config.ToolRouting.ShadowSampleRate,
+		DeterministicFastpath: a.config.ToolRouting.DeterministicFastpath,
+		FastpathConfidence:    a.config.ToolRouting.FastpathConfidence,
 	})
 
 	if len(plan.Primary) == 0 {
@@ -628,17 +683,51 @@ func (a *Agent) buildToolSchemas(disableWebFetch bool) []provider.ToolSchema {
 	}
 
 	if a.eventLogger != nil {
-		a.eventLogger.Log(EventToolRoute, map[string]any{
+		eligible := len(candidates) - len(plan.Filtered)
+		if eligible < 0 {
+			eligible = 0
+		}
+		payload := map[string]any{
+			"strategy":              strategy,
 			"intent":                plan.Intent,
 			"has_image":             hasImage,
 			"model_image_supported": modelImageSupported,
+			"eligible_tools":        eligible,
 			"primary_tools":         primaryNames,
 			"fallback_tools":        plan.Fallback,
 			"filtered_tools":        plan.Filtered,
-		})
+		}
+		if plan.FastPath != nil {
+			payload["fastpath_used"] = true
+			payload["fastpath_tool"] = plan.FastPath.Tool
+			payload["fastpath_task"] = plan.FastPath.Task
+			payload["fastpath_confidence"] = plan.FastPath.Confidence
+		}
+		if plan.Shadow != nil {
+			shadowNames := make([]string, 0, len(plan.Shadow.Primary))
+			for _, s := range plan.Shadow.Primary {
+				shadowNames = append(shadowNames, s.Name)
+			}
+			payload["shadow_strategy"] = plan.Shadow.Strategy
+			payload["shadow_primary_tools"] = shadowNames
+			payload["shadow_fallback_tools"] = plan.Shadow.Fallback
+			payload["shadow_filtered_tools"] = plan.Shadow.Filtered
+		}
+		a.eventLogger.Log(EventToolRoute, payload)
 	}
 	if a.config.ToolRouting.Debug {
-		a.io.SystemMessage(fmt.Sprintf("Tool router: intent=%s primary=%s", plan.Intent, strings.Join(primaryNames, ", ")))
+		msg := fmt.Sprintf("Tool router: strategy=%s intent=%s primary=%s", strategy, plan.Intent, strings.Join(primaryNames, ", "))
+		if plan.FastPath != nil {
+			msg = fmt.Sprintf("%s | fastpath=%s(%.2f)", msg, plan.FastPath.Tool, plan.FastPath.Confidence)
+		}
+		if plan.Shadow != nil {
+			shadowNames := make([]string, 0, len(plan.Shadow.Primary))
+			for _, s := range plan.Shadow.Primary {
+				shadowNames = append(shadowNames, s.Name)
+			}
+			msg = fmt.Sprintf("%s | shadow=%s", msg, strings.Join(shadowNames, ", "))
+		}
+		a.io.SystemMessage(msg)
 	}
 
 	return ordered

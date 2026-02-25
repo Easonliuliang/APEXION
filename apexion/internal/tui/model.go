@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // ---------- messages sent from agent goroutine via program.Send() ----------
@@ -690,6 +691,11 @@ func (m Model) View() string {
 		}
 	} else if m.inputMode {
 		input = m.textinput.View()
+		if !m.slashMenu {
+			if preview := renderWrappedInputPreview(m.textinput.Value(), m.width-4, 8); preview != "" {
+				input += "\n" + hintStyle.Render(preview)
+			}
+		}
 		if m.slashMenu && len(m.slashFiltered) > 0 {
 			input += "\n" + renderSlashMenu(m.slashFiltered, m.slashSel, m.width)
 		}
@@ -1213,6 +1219,73 @@ func countNonEmptyContent(s string) int {
 		return 0
 	}
 	return len(lines)
+}
+
+func renderWrappedInputPreview(text string, width int, maxLines int) string {
+	if strings.TrimSpace(text) == "" || width < 8 {
+		return ""
+	}
+	if maxLines <= 0 {
+		maxLines = 8
+	}
+
+	wrapped := wrapByDisplayWidth(text, width)
+	if len(wrapped) <= 1 {
+		return ""
+	}
+
+	start := 0
+	var out []string
+	if len(wrapped) > maxLines {
+		start = len(wrapped) - maxLines
+		out = append(out, fmt.Sprintf("… +%d lines", start))
+	}
+	for i := start; i < len(wrapped); i++ {
+		prefix := "  "
+		if len(out) == 0 {
+			prefix = "↳ "
+		}
+		out = append(out, prefix+wrapped[i])
+	}
+	return strings.Join(out, "\n")
+}
+
+func wrapByDisplayWidth(text string, width int) []string {
+	if width <= 0 {
+		width = 80
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		if line == "" {
+			out = append(out, "")
+			continue
+		}
+
+		var b strings.Builder
+		curWidth := 0
+		for _, r := range line {
+			w := runewidth.RuneWidth(r)
+			if w <= 0 {
+				w = 1
+			}
+			if curWidth+w > width && b.Len() > 0 {
+				out = append(out, b.String())
+				b.Reset()
+				curWidth = 0
+			}
+			b.WriteRune(r)
+			curWidth += w
+		}
+		out = append(out, b.String())
+	}
+
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
 }
 
 func countNonEmptyLines(s string) int {
